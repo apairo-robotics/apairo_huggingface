@@ -1,0 +1,94 @@
+"""The reusable sink: an apairo TartanDrive dataset -> a LeRobotDataset.
+
+This module is where apairo's value shows: `to_lerobot` reads top to bottom as
+load -> align -> copy frames -> finalize, because apairo already did the loading,
+resampling and episode segmentation. The per-frame domain logic is three
+functions in :mod:`.mappings`.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from apairo import TartanKittiDataset
+
+from . import config
+from .features import build_features
+from .mappings import frame_of
+
+
+def load_tartan(root: str) -> TartanKittiDataset:
+    """Load the TartanDrive channels needed for the camera+state+action triplet.
+
+    ``root`` may be a TartanDrive root (many recordings) or a single sequence.
+    """
+    return TartanKittiDataset(root, keys=[config.CAMERA, config.STATE, config.ACTION])
+
+
+def episodes(tartan: TartanKittiDataset) -> list:
+    """One apairo dataset per recording. A root holds many (`.sequences`); a
+    single sequence directory is itself one episode."""
+    try:
+        return list(tartan.sequences)
+    except AttributeError:
+        return [tartan]
+
+
+def aligned_frames(episode):
+    """Resample one recording onto the camera clock -> synchronous frames."""
+    return episode.synchronize(
+        reference=config.REFERENCE, method=config.METHOD, tolerance=config.TOLERANCE
+    )
+
+
+def to_lerobot(tartan: TartanKittiDataset, repo_id: str, *, push: bool = False, root=None):
+    """Write an apairo TartanDrive dataset to a LeRobotDataset and return it.
+
+    Args:
+        tartan:   dataset from :func:`load_tartan` (root or single sequence).
+        repo_id:  target LeRobotDataset id (``<user>/<name>`` when pushing).
+        push:     upload to the Hugging Face Hub after writing.
+        root:     local output directory (defaults to LeRobot's cache home).
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    recordings = episodes(tartan)
+    probe = aligned_frames(recordings[0])[0]
+
+    dataset = LeRobotDataset.create(
+        repo_id=repo_id,
+        fps=config.FPS,
+        features=build_features(probe),
+        robot_type=config.ROBOT_TYPE,
+        root=root,
+    )
+
+    # One TartanDrive recording = one LeRobot episode. apairo has already aligned
+    # the multi-rate sensors, so all that remains is to copy the frames across.
+    for recording in recordings:
+        for sample in aligned_frames(recording):
+            dataset.add_frame(frame_of(sample))
+        dataset.save_episode()
+
+    dataset.finalize()          # required in LeRobot v3 before the dataset is valid
+    if push:
+        dataset.push_to_hub()
+    return dataset
+
+
+def validate(tartan: TartanKittiDataset):
+    """Exercise the apairo read path without lerobot, asserting every mapped
+    array matches the declared schema. Returns ``(features, per_episode_counts)``."""
+    recordings = episodes(tartan)
+    features = build_features(aligned_frames(recordings[0])[0])
+
+    counts = []
+    for recording in recordings:
+        frames = aligned_frames(recording)
+        for sample in frames:
+            frame = frame_of(sample)
+            for name, spec in features.items():
+                shape = np.asarray(frame[name]).shape
+                if shape != spec["shape"]:
+                    raise ValueError(f"{name}: {shape} != {spec['shape']}")
+        counts.append(len(frames))
+    return features, counts

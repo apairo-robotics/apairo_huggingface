@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 install-lerobot.log
+*.egg-info/
+src/*.egg-info/
+.pytest_cache/
