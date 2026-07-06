@@ -48,6 +48,41 @@ pip install -e ../apairo          # apairo core (sibling repo, editable)
 pip install -e ".[test]"          # this package + lerobot>=0.4.0
 ```
 
+## Getting the data
+
+TartanDrive v2 ships as ROS bags. Two steps bring them into the apairo layout
+this exporter reads.
+
+**1. Download the bags.** The upstream release only exposes a GUI downloader;
+this fork adds a lax CLI so you can pull sequences straight from the terminal:
+
+```bash
+git clone https://github.com/augustin-bresset/tartan_drive_2.0
+# follow its README to download sequences from the CLI
+```
+
+Pick the **rosbag** distribution — *not* the pre-converted KITTI one. apairo turns
+bags into its native layout directly, keeping `/tf`, static calibration and each
+channel's `frame_id` that the KITTI export flattens away.
+
+**2. Extract to apairo format** with
+[apairo_extractor](https://github.com/apairo-robotics/apairo_extractor), which
+reads ROS bags and writes the `.apairo` sidecars (`channels.yaml`, calibration
+from `/tf_static`) — ready for `TartanKittiDataset` / `RawDataset`:
+
+```bash
+pip install -e ../apairo_extractor
+
+apairo-extractor -i /path/to/rosbags -l                      # discover topics
+apairo-extractor -i /path/to/rosbags -o /path/to/tartan \
+    -t <left_color_topic> <gps_odom_topic> <cmd_topic> /tf /tf_static
+```
+
+Run `-l` first to list the real topic names, then extract the left colour camera,
+GPS odometry and drive-command topics (plus `/tf` / `/tf_static` for poses and
+calibration). The output at `/path/to/tartan` loads straight into the exporter
+below via `--root`.
+
 ## Use
 
 ```bash
@@ -78,10 +113,10 @@ pytest        # builds a synthetic TartanDrive dataset, exports it, reloads it
 
 ## Notes
 
-- **Data**: TartanDrive v2 is assumed already on disk (no downloader). The apairo
-  fixture `apairo/test/assets/mini_tartan` ships only `velodyne_0`/`cmd`/`imu`, so
-  the full camera+state+action mapping needs a complete sequence — hence the
-  synthetic fixture in `tests/`.
+- **Data**: see [Getting the data](#getting-the-data) for the rosbag download +
+  apairo_extractor workflow. The apairo fixture `apairo/test/assets/mini_tartan`
+  ships only `velodyne_0`/`cmd`/`imu`, so the full camera+state+action mapping
+  needs a complete sequence — hence the synthetic fixture in `tests/`.
 - **Verified** against `lerobot 0.5.1` (LeRobotDataset v3.0) and `apairo 0.4.0`:
   `create → add_frame({..., "task"}) → save_episode → finalize → push_to_hub`.
   In v3, `task` is a key of the frame dict and `finalize()` is required before the
