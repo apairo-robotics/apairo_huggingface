@@ -135,5 +135,13 @@ If you use this dataset, please cite TartanDrive 2.0:
 }
 ```
 
-License follows the upstream TartanDrive 2.0 release; the conversion code is
-MIT.
+## License
+
+The original [TartanDrive dataset](https://theairlab.org/tartandrive-dataset/)
+is explicitly released under
+[CC BY 4.0](http://creativecommons.org/licenses/by/4.0/). TartanDrive 2.0 does
+not state a separate data license (its repository's MIT license covers the
+code); this conversion is published under CC BY 4.0 accordingly, with full
+attribution to the AirLab authors above. The conversion code
+([apairo_huggingface](https://github.com/apairo-robotics/apairo_huggingface))
+is MIT.
