@@ -16,17 +16,35 @@ from .features import build_features
 from .mappings import frame_of
 
 
-def load_tartan(root: str) -> TartanKittiDataset:
+def load_tartan(root: str):
     """Load the TartanDrive channels needed for the camera+state+action triplet.
 
     ``root`` may be a TartanDrive root (many recordings) or a single sequence.
+    A root construction fails as a whole when any sequence lacks a channel
+    (e.g. one recording was downloaded without the camera modality); in that
+    case fall back to probing per sequence and keep only the complete ones.
     """
-    return TartanKittiDataset(root, keys=[config.CAMERA, config.STATE, config.ACTION])
+    keys = [config.CAMERA, config.STATE, config.ACTION]
+    try:
+        return TartanKittiDataset(root, keys=keys)
+    except KeyError:
+        probe = TartanKittiDataset(root, keys=[config.ACTION])
+        if not getattr(probe, "_is_root", False):
+            raise
+        complete = [s for s in probe.sequences if set(keys) <= set(s.available)]
+        skipped = sorted(set(s.name for s in probe.sequences) - set(s.name for s in complete))
+        if not complete:
+            raise
+        print(f"skipping {len(skipped)} sequence(s) missing {keys}: {', '.join(skipped)}")
+        return [TartanKittiDataset(s.root_dir, keys=keys) for s in complete]
 
 
-def episodes(tartan: TartanKittiDataset) -> list:
+def episodes(tartan) -> list:
     """One apairo dataset per recording. A root holds many (`.sequences`); a
-    single sequence directory is itself one episode."""
+    single sequence directory is itself one episode; :func:`load_tartan` may
+    already have expanded a partially-complete root into a list."""
+    if isinstance(tartan, list):
+        return tartan
     try:
         return list(tartan.sequences)
     except AttributeError:
