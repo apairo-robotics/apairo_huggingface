@@ -76,15 +76,13 @@ from `/tf_static`) — ready for `TartanKittiDataset` / `RawDataset`:
 ```bash
 pip install -e ../apairo_extractor
 
-apairo-extractor -i /path/to/rosbags -l                      # discover topics
-apairo-extractor -i /path/to/rosbags -o /path/to/tartan \
-    -t <left_color_topic> <gps_odom_topic> <cmd_topic> /tf /tf_static
+apairo extractor      # launches the interactive TUI in the terminal
 ```
 
-Run `-l` first to list the real topic names, then extract the left colour camera,
-GPS odometry and drive-command topics (plus `/tf` / `/tf_static` for poses and
-calibration). The output at `/path/to/tartan` loads straight into the exporter
-below via `--root`.
+The TUI walks you through it: point it at your rosbag directory, pick the topics
+to extract (left colour camera, GPS odometry, drive command — plus `/tf` /
+`/tf_static` for poses and calibration) and the output path. The result loads
+straight into the exporter below via `--root`.
 
 ## Use
 
