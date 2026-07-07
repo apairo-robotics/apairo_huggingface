@@ -31,6 +31,9 @@ src/apairo_huggingface/
   cli.py         apairo-tartan-export
 examples/
   export_tartan_to_lerobot.py   thin, linear entry point
+  load_tartan_views.py          the same raw data as lidar / IMU / windowed / DataLoader views
+hub/
+  dataset_card.md               the Hub dataset card, ready to upload
 tests/
   conftest.py    synthetic TartanDrive fixture
   test_export.py dry-run + export + reload round-trip
@@ -107,6 +110,25 @@ dataset = to_lerobot(load_tartan("/path/to/tartan"), "me/tartandrive_offroad", p
 
 `--root` accepts a TartanDrive **root** (many recordings → many episodes) or a
 **single** sequence directory (→ one episode); it also reads `APAIRO_TARTAN_ROOT`.
+
+## Beyond the export: many views of the same raw data
+
+The LeRobot export is one slice of the recordings — the camera clock with pose
+and command attached. Changing `keys=` and `reference=` re-slices the same
+apairo dataset into other views with no new loader code: lidar-clock perception,
+IMU-rate dynamics, causal windows for action chunking, or a direct PyTorch
+`DataLoader`. See [`examples/load_tartan_views.py`](examples/load_tartan_views.py)
+(runs against apairo's `mini_tartan` fixture).
+
+## Publish the dataset card
+
+`push_to_hub` generates a minimal README on the dataset repo. Replace it with
+the full card in [`hub/dataset_card.md`](hub/dataset_card.md) — features table,
+the apairo story, reproduction command and TartanDrive citation:
+
+```bash
+hf upload <user>/tartandrive_offroad hub/dataset_card.md README.md --repo-type dataset
+```
 
 ## Test
 
