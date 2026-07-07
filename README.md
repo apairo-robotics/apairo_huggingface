@@ -60,6 +60,7 @@ at a time. This fork adds an interactive terminal client that lets you pick
 ```bash
 git clone https://github.com/augustin-bresset/tartan_drive_2.0
 cd tartan_drive_2.0
+pip install -r requirements.txt   # TartanDrive download dependencies
 python scripts/tartan_cli.py      # interactive client: choose modalities + sequences, download in bulk
 ```
 
