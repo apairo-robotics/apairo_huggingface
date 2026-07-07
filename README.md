@@ -53,12 +53,14 @@ pip install -e ".[test]"          # this package + lerobot>=0.4.0
 TartanDrive v2 ships as ROS bags. Two steps bring them into the apairo layout
 this exporter reads.
 
-**1. Download the bags.** The upstream release only exposes a GUI downloader;
-this fork adds a lax CLI so you can pull sequences straight from the terminal:
+**1. Download the bags.** Upstream ships a GUI downloader that pulls one sequence
+at a time. This fork adds an interactive terminal client that lets you pick
+**modalities × sequences and download them all in one pass**:
 
 ```bash
 git clone https://github.com/augustin-bresset/tartan_drive_2.0
-# follow its README to download sequences from the CLI
+cd tartan_drive_2.0
+python scripts/tartan_cli.py      # interactive client: choose modalities + sequences, download in bulk
 ```
 
 Pick the **rosbag** distribution — *not* the pre-converted KITTI one. apairo turns
