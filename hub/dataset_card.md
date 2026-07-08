@@ -15,10 +15,74 @@ pretty_name: TartanDrive Off-Road (LeRobot format)
 
 # TartanDrive Off-Road — LeRobotDataset
 
-Off-road driving episodes from **[TartanDrive 2.0](https://github.com/castacks/tartan_drive_2.0)**
-(AirLab, CMU), converted to the **LeRobotDataset v3** format. Each frame pairs a
-real (never interpolated) front-camera image with the robot pose and the drive
-command nearest in time.
+> **This dataset is a demonstration of a data pipeline.** All 54 episodes /
+> ~119k frames were generated from raw, *asynchronous* TartanDrive 2.0 rosbags,
+> and the only code specific to this conversion is **~17 lines of
+> channel→feature mapping**. Everything hard — loading multi-rate sensors,
+> time-aligning them, cutting episodes — is done by
+> [**apairo**](https://github.com/apairo-robotics/apairo). The interesting part
+> isn't the data, it's *how little, and how clearly, it takes to get there.*
+
+## The entire conversion
+
+TartanDrive is an **asynchronous, multi-rate sensor rig**: camera, GPS odometry
+and drive commands each tick on their own clock, one channel per file. LeRobot
+wants the opposite — synchronous, per-episode frames with every modality
+aligned. That gap is normally where a pile of brittle glue code lives.
+
+apairo closes it on the read side, so the **whole domain logic is three pure
+functions** ([`mappings.py`](https://github.com/apairo-robotics/apairo_huggingface/blob/main/src/apairo_huggingface/mappings.py)):
+
+```python
+# the only code specific to TartanDrive → LeRobot
+def image_front(sample):      # (H, W, 3) uint8 left camera, ready as-is
+    return sample.data["image_left_color"]
+
+def odom_to_state(sample):    # pose [x, y, z, qx, qy, qz, qw]
+    return sample.data["gps_odom"][:7].astype(np.float32)
+
+def twist_to_action(sample):  # [linear_velocity, angular_velocity]
+    return sample.data["cmd"].astype(np.float32)
+```
+
+…and the export reads top-to-bottom as *load → align → copy → finalize*,
+because apairo already did the loading, resampling and episode segmentation:
+
+```python
+from apairo import TartanKittiDataset
+
+tartan = TartanKittiDataset(root, keys=["image_left_color", "gps_odom", "cmd"])
+
+for recording in tartan.sequences:                  # one recording = one episode
+    for sample in recording.synchronize(            # multi-rate → camera clock
+            reference="image_left_color", method="nearest", tolerance=0.05):
+        dataset.add_frame({
+            "observation.images.front": image_front(sample),
+            "observation.state":        odom_to_state(sample),
+            "action":                   twist_to_action(sample),
+            "task": "drive off-road",
+        })
+    dataset.save_episode()
+dataset.finalize()
+```
+
+That is the entire pipeline. No timestamp-matching loop, no per-sensor
+resampling, no episode bookkeeping — `synchronize()` resamples every channel
+onto the camera clock (nearest within ±50 ms), so images are always *real*
+sensor frames and state/action are the nearest measurements in time.
+
+**Full source, all open:**
+[apairo_huggingface](https://github.com/apairo-robotics/apairo_huggingface)
+(the exporter above) ·
+[apairo](https://github.com/apairo-robotics/apairo) (the data layer) ·
+[apairo_extractor](https://github.com/apairo-robotics/apairo_extractor)
+(rosbags → `.apairo` layout). Reproduce with:
+
+```bash
+apairo-tartan-export --repo-id <you>/tartandrive_offroad --root /path/to/tartan
+```
+
+## What's in it
 
 ```python
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -30,50 +94,21 @@ frame["observation.state"]         # [x, y, z, qx, qy, qz, qw] pose
 frame["action"]                    # [linear_velocity, angular_velocity]
 ```
 
-## Features
-
 | Feature | Shape | Source (TartanDrive channel) |
 |---|---|---|
 | `observation.images.front` | (H, W, 3) uint8 video | `image_left_color` — left colour camera |
 | `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` |
 | `action` | (2,) float32 | `cmd` — `[linear_velocity, angular_velocity]` |
 
-- **fps**: 10 (camera clock)
-- **robot_type**: `tartandrive` (Yamaha Viking ATV)
-- **task**: `drive off-road`
-- One TartanDrive recording = one LeRobot episode.
-
-## How it was made — with apairo
-
-TartanDrive ships as an **asynchronous, multi-rate sensor rig**: camera, GPS
-odometry and drive commands each tick on their own clock, one channel per file.
-LeRobot wants the opposite — synchronous, per-episode frames with every modality
-aligned.
-
-**[apairo](https://github.com/apairo-robotics/apairo)** closes that gap on the
-read side (loading, resampling, episode segmentation), so the entire conversion
-is three pure mapping functions plus a copy loop:
-
-```python
-def image_front(sample):     # (H, W, 3) uint8, ready as-is
-    return sample.data["image_left_color"]
-
-def odom_to_state(sample):   # pose [x, y, z, qx, qy, qz, qw]
-    return sample.data["gps_odom"][:7].astype(np.float32)
-
-def twist_to_action(sample): # [linear_velocity, angular_velocity]
-    return sample.data["cmd"].astype(np.float32)
-```
-
-Every channel is resampled onto the camera clock (`method="nearest"`,
-tolerance ±50 ms), so images are always real sensor frames and state/action are
-the nearest measurements in time.
+- **fps**: 10 (camera clock) · **robot_type**: `tartandrive` (Yamaha Viking ATV)
+  · **task**: `drive off-road`
+- 54 recordings → 54 episodes, ~119k synchronized frames.
 
 ## One raw dataset, many views
 
-This LeRobotDataset is **one** slice of the raw recordings: the camera clock,
+This LeRobotDataset is **one** slice of the raw recordings — the camera clock,
 with pose and command attached. The same apairo dataset re-slices into other
-views by changing `keys=` and `reference=` — no new loader code:
+views by changing `keys=` and `reference=`, again with no new loader code:
 
 ```python
 from apairo import TartanKittiDataset
@@ -96,24 +131,10 @@ loader = torch.utils.data.DataLoader(dyn, batch_size=32, collate_fn=collate)
 ```
 
 Each view is lazy (indices at construction, reads on access) and slots straight
-into a `DataLoader` — or into `to_lerobot()` to publish it as another
-LeRobotDataset like this one.
-
-The full pipeline — raw ROS bags → apairo layout → LeRobotDataset — is open
-source:
-
-- **Exporter** (this dataset's build script):
-  [apairo_huggingface](https://github.com/apairo-robotics/apairo_huggingface)
-- **Data layer** (multi-rate sync, episode handling):
-  [apairo](https://github.com/apairo-robotics/apairo)
-- **Rosbag extractor** (bags → `.apairo` sidecars):
-  [apairo_extractor](https://github.com/apairo-robotics/apairo_extractor)
-
-Reproduce with:
-
-```bash
-apairo-tartan-export --repo-id <you>/tartandrive_offroad --root /path/to/tartan
-```
+into a `DataLoader` — or back into the exporter to publish as another
+LeRobotDataset like this one. The single-slice-here / many-slices-there gap is
+exactly the point: LeRobot fixes one schema, apairo yields as many as there are
+uses.
 
 ## Source data
 
