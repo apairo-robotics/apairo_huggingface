@@ -5,7 +5,6 @@ from __future__ import annotations
 from apairo.core.sample import Sample
 
 from . import config
-from .mappings import image_front
 
 
 def build_features(probe: Sample) -> dict:
@@ -15,7 +14,7 @@ def build_features(probe: Sample) -> dict:
     camera resolution. ``dtype="video"`` matches ``use_videos=True`` (frames are
     concatenated and encoded to MP4 by LeRobot).
     """
-    height, width, _ = image_front(probe).shape
+    height, width, _ = probe.data[config.CAMERA].shape
     return {
         "observation.images.front": {
             "dtype": "video",

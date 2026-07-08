@@ -13,7 +13,7 @@ from apairo import TartanKittiDataset
 
 from . import config
 from .features import build_features
-from .mappings import frame_of
+from .mappings import CHANNEL_TRANSFORMS, frame_of
 
 
 def load_tartan(root: str):
@@ -52,10 +52,18 @@ def episodes(tartan) -> list:
 
 
 def aligned_frames(episode):
-    """Resample one recording onto the camera clock -> synchronous frames."""
-    return episode.synchronize(
+    """Resample one recording onto the camera clock, then cast/slice each channel.
+
+    Transforms are applied *after* ``synchronize`` on purpose: a transform set on
+    the pre-sync dataset is dropped, because the synchronized view resamples from
+    the raw channels.
+    """
+    frames = episode.synchronize(
         reference=config.REFERENCE, method=config.METHOD, tolerance=config.TOLERANCE
     )
+    for channel, transform in CHANNEL_TRANSFORMS.items():
+        frames = frames.transform(channel, transform)
+    return frames
 
 
 def to_lerobot(tartan: TartanKittiDataset, repo_id: str, *, push: bool = False, root=None):

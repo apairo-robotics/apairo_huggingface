@@ -30,46 +30,46 @@ and drive commands each tick on their own clock, one channel per file. LeRobot
 wants the opposite — synchronous, per-episode frames with every modality
 aligned. That gap is normally where a pile of brittle glue code lives.
 
-apairo closes it on the read side, so the **whole domain logic is three pure
-functions** ([`mappings.py`](https://github.com/apairo-robotics/apairo_huggingface/blob/main/src/apairo_huggingface/mappings.py)):
+apairo closes it on the read side, and the per-frame value ops are **small
+composable transforms** — cast the command, take the pose out of the odometry
+row, leave the image untouched — chained onto the synchronized view, so there is
+essentially **no bespoke domain code left**:
 
 ```python
-# the only code specific to TartanDrive → LeRobot
-def image_front(sample):      # (H, W, 3) uint8 left camera, ready as-is
-    return sample.data["image_left_color"]
+import numpy as np
+from apairo import TartanKittiDataset, Compose
+from apairo_transform import CastTo               # library transform
+from apairo_huggingface import SelectComponents   # 4-line last-axis selector
 
-def odom_to_state(sample):    # pose [x, y, z, qx, qy, qz, qw]
-    return sample.data["gps_odom"][:7].astype(np.float32)
-
-def twist_to_action(sample):  # [linear_velocity, angular_velocity]
-    return sample.data["cmd"].astype(np.float32)
+frames = (TartanKittiDataset(root, keys=["image_left_color", "gps_odom", "cmd"])
+          .synchronize(reference="image_left_color",       # multi-rate → camera clock
+                       method="nearest", tolerance=0.05)
+          .transform("gps_odom", Compose([SelectComponents(range(7)),  # pose out of Odometry
+                                          CastTo(np.float32)]))
+          .transform("cmd", CastTo(np.float32)))            # image_left_color: as-is
 ```
 
-…and the export reads top-to-bottom as *load → align → copy → finalize*,
-because apairo already did the loading, resampling and episode segmentation:
+The whole export is then *load → align → copy → finalize*, because apairo
+already did the loading, resampling and episode segmentation, and the frame is
+pure naming:
 
 ```python
-from apairo import TartanKittiDataset
-
-tartan = TartanKittiDataset(root, keys=["image_left_color", "gps_odom", "cmd"])
-
-for recording in tartan.sequences:                  # one recording = one episode
-    for sample in recording.synchronize(            # multi-rate → camera clock
-            reference="image_left_color", method="nearest", tolerance=0.05):
+for recording in tartan.sequences:              # one recording = one episode
+    for sample in aligned_frames(recording):    # the synchronized+transformed view above
         dataset.add_frame({
-            "observation.images.front": image_front(sample),
-            "observation.state":        odom_to_state(sample),
-            "action":                   twist_to_action(sample),
+            "observation.images.front": sample.data["image_left_color"],
+            "observation.state":        sample.data["gps_odom"],
+            "action":                   sample.data["cmd"],
             "task": "drive off-road",
         })
     dataset.save_episode()
 dataset.finalize()
 ```
 
-That is the entire pipeline. No timestamp-matching loop, no per-sensor
-resampling, no episode bookkeeping — `synchronize()` resamples every channel
-onto the camera clock (nearest within ±50 ms), so images are always *real*
-sensor frames and state/action are the nearest measurements in time.
+No timestamp-matching loop, no per-sensor resampling, no episode bookkeeping,
+and no custom transform code — `synchronize()` resamples every channel onto the
+camera clock (nearest within ±50 ms) and the value ops are library callables.
+Full source: [`mappings.py`](https://github.com/apairo-robotics/apairo_huggingface/blob/main/src/apairo_huggingface/mappings.py).
 
 **Full source, all open:**
 [apairo_huggingface](https://github.com/apairo-robotics/apairo_huggingface)

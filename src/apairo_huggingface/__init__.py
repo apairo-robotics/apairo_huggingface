@@ -12,7 +12,7 @@ from __future__ import annotations
 from . import config
 from .export import aligned_frames, episodes, load_tartan, to_lerobot, validate
 from .features import build_features
-from .mappings import frame_of, image_front, odom_to_state, twist_to_action
+from .mappings import CHANNEL_TRANSFORMS, SelectComponents, frame_of
 
 __all__ = [
     "config",
@@ -23,7 +23,6 @@ __all__ = [
     "aligned_frames",
     "build_features",
     "frame_of",
-    "image_front",
-    "odom_to_state",
-    "twist_to_action",
+    "CHANNEL_TRANSFORMS",
+    "SelectComponents",
 ]

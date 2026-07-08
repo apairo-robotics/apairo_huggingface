@@ -11,21 +11,23 @@ TartanDrive is an asynchronous, multi-rate sensor rig — camera, GPS/odometry a
 drive commands each tick on their own clock, one channel per file. LeRobot wants
 the opposite: synchronous, per-episode frames with every modality aligned.
 
-apairo closes that gap on the read side, so **the only code this package adds is
-the channel → feature mapping**:
+apairo closes that gap on the read side, so **there is essentially no bespoke
+domain code**: the per-frame value ops are composable transforms
+(`apairo_transform.CastTo` + a 4-line last-axis `SelectComponents`) chained onto
+the synchronized view, and the frame is pure naming:
 
-| LeRobot feature | ← TartanDrive channel | mapping |
+| LeRobot feature | ← TartanDrive channel | transform |
 |---|---|---|
-| `observation.images.front` | `image_left_color` (H×W×3 uint8) | as-is |
-| `observation.state` | `gps_odom` | pose `[x, y, z, qx, qy, qz, qw]` |
-| `action` | `cmd` | twist `[linear_velocity, angular_velocity]` |
+| `observation.images.front` | `image_left_color` (H×W×3 uint8) | as-is (identity) |
+| `observation.state` | `gps_odom` | `SelectComponents(range(7))` → pose, `CastTo(float32)` |
+| `action` | `cmd` | `CastTo(float32)` → `[linear_velocity, angular_velocity]` |
 
 ## Layout
 
 ```
 src/apairo_huggingface/
   config.py      channels, sync params, task, feature dims
-  mappings.py    image_front / odom_to_state / twist_to_action  (the domain code)
+  mappings.py    channel transforms (CastTo / SelectComponents) + frame naming
   features.py    build_features — the LeRobot schema, sized from a real frame
   export.py      to_lerobot() — the reusable sink; validate() — the dry-run
   cli.py         apairo-tartan-export
