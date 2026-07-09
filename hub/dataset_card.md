@@ -30,21 +30,21 @@ and drive commands each tick on their own clock, one channel per file. LeRobot
 wants the opposite — synchronous, per-episode frames with every modality
 aligned. That gap is normally where a pile of brittle glue code lives.
 
-apairo closes it on the read side, and the per-frame value ops are **small
-composable transforms** — cast the command, take the pose out of the odometry
-row, leave the image untouched — chained onto the synchronized view, so there is
-essentially **no bespoke domain code left**:
+apairo closes it on the read side, and the per-frame value ops are **standard
+[`apairo_transform`](https://github.com/apairo-robotics/apairo_transform)
+callables** — cast the command, take the pose out of the odometry row, leave the
+image untouched — chained onto the synchronized view, so there is **no bespoke
+domain code left**:
 
 ```python
 import numpy as np
 from apairo import TartanKittiDataset, Compose
-from apairo_transform import CastTo               # library transform
-from apairo_huggingface import SelectComponents   # 4-line last-axis selector
+from apairo_transform import CastTo, ChannelSelect   # library transforms
 
 frames = (TartanKittiDataset(root, keys=["image_left_color", "gps_odom", "cmd"])
           .synchronize(reference="image_left_color",       # multi-rate → camera clock
                        method="nearest", tolerance=0.05)
-          .transform("gps_odom", Compose([SelectComponents(range(7)),  # pose out of Odometry
+          .transform("gps_odom", Compose([ChannelSelect(range(7)),  # pose out of Odometry
                                           CastTo(np.float32)]))
           .transform("cmd", CastTo(np.float32)))            # image_left_color: as-is
 ```

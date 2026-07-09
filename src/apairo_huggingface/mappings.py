@@ -11,32 +11,14 @@ from __future__ import annotations
 
 import numpy as np
 from apairo import Compose
-from apairo_transform import CastTo
+from apairo_transform import CastTo, ChannelSelect
 
 from . import config
-
-
-class SelectComponents:
-    """Keep components ``indices`` along the last axis of a per-frame array.
-
-    Stand-in for :class:`apairo_transform.ChannelSelect`, which indexes
-    ``pc[:, channels]`` and so only handles a 2-D point cloud -- it raises on a
-    1-D state vector like ``gps_odom``. Proposed upstream fix: ellipsis
-    indexing (``pc[..., channels]``) makes it work on both. See the augmentation
-    proposal in the commit message.
-    """
-
-    def __init__(self, indices) -> None:
-        self._indices = list(indices)
-
-    def __call__(self, x: np.ndarray) -> np.ndarray:
-        return np.asarray(x)[..., self._indices]
-
 
 # Per-frame value transforms, applied to the synchronized view (see export.py).
 # gps_odom (pose 7 + twist 6) -> pose as float32; cmd -> float32; image untouched.
 CHANNEL_TRANSFORMS = {
-    config.STATE: Compose([SelectComponents(range(config.POSE_DIM)), CastTo(np.float32)]),
+    config.STATE: Compose([ChannelSelect(range(config.POSE_DIM)), CastTo(np.float32)]),
     config.ACTION: CastTo(np.float32),
 }
 
