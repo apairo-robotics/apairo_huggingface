@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
+from PIL import Image
 
 from apairo_huggingface import config, label_sequence
 from apairo_huggingface.calibration import IMAGE_HEIGHT, IMAGE_WIDTH
@@ -18,21 +19,25 @@ def seq(tartan_root_raw):
     return Path(tartan_root_raw) / "forest_00"
 
 
+def _mask(seq, i=0):
+    return np.asarray(Image.open(seq / config.TRAV_MASK / f"{i:06d}.png"))
+
+
 def test_label_sequence_writes_registered_channels(seq):
     assert label_sequence(seq) is True
 
-    for channel in (config.TRAV_TRAJ, config.LIDAR_UV, config.TRAV_MASK):
-        files = sorted((seq / channel).glob("[0-9]*.npy"))
-        assert len(files) == N, channel
-        assert (seq / channel / "timestamps.txt").exists()
+    assert len(sorted((seq / config.TRAV_TRAJ).glob("[0-9]*.npy"))) == N
+    assert len(sorted((seq / config.TRAV_MASK).glob("[0-9]*.png"))) == N
+    assert (seq / config.TRAV_MASK / "timestamps.txt").exists()
+    assert not (seq / config.LIDAR_UV).exists()  # opt-in, ~2 GB/recording
 
     registered = yaml.safe_load((seq / ".apairo" / "channels.yaml").read_text())["channels"]
-    for channel in (config.TRAV_TRAJ, config.LIDAR_UV, config.TRAV_MASK):
-        assert registered[channel]["loader"] == "npys"
+    assert registered[config.TRAV_TRAJ]["loader"] == "npys"
+    assert registered[config.TRAV_MASK]["loader"] == "img"
 
 
 def test_labels_are_row_aligned_and_semantically_right(seq):
-    label_sequence(seq)
+    label_sequence(seq, keep_uv=True)
     scan = np.load(seq / "velodyne_0" / "000000.npy")
     labels = np.load(seq / config.TRAV_TRAJ / "000000.npy")
     uv = np.load(seq / config.LIDAR_UV / "000000.npy")
@@ -51,7 +56,7 @@ def test_labels_are_row_aligned_and_semantically_right(seq):
 
 def test_mask_contains_dense_corridor(seq):
     label_sequence(seq)
-    mask = np.load(seq / config.TRAV_MASK / "000000.npy")
+    mask = _mask(seq)
     assert mask.shape == (IMAGE_HEIGHT, IMAGE_WIDTH) and mask.dtype == np.uint8
     assert set(np.unique(mask)) <= {0, 1, 255}
 
@@ -64,10 +69,9 @@ def test_mask_contains_dense_corridor(seq):
 
 def test_relabel_skips_unless_overwrite(seq):
     assert label_sequence(seq) is True
-    before = np.load(seq / config.TRAV_MASK / "000000.npy")
+    before = _mask(seq)
 
     assert label_sequence(seq) is False
 
     assert label_sequence(seq, overwrite=True) is True
-    after = np.load(seq / config.TRAV_MASK / "000000.npy")
-    np.testing.assert_array_equal(before, after)  # deterministic pipeline
+    np.testing.assert_array_equal(before, _mask(seq))  # deterministic pipeline

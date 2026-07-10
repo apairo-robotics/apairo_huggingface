@@ -28,9 +28,11 @@ only depend on future positions, so chunked labels are exact.
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageDraw
 from apairo import ChannelWriter, TartanKittiDataset
 from apairo.core.sample import Sample
 from apairo_preprocess import (
@@ -122,8 +124,6 @@ def corridor_mask(traj, j, pose, uv_lidar, *, max_path, half_width, ground_offse
     around its vertices is more than ``occlusion_margin`` metres in front of
     it: corridor hidden behind an obstacle stays unlabeled.
     """
-    from PIL import Image, ImageDraw
-
     height, width = IMAGE_HEIGHT, IMAGE_WIDTH
     left_w, right_w = corridor_edges(traj, j, max_path, half_width, ground_offset)
     if len(left_w) < 2:
@@ -174,8 +174,13 @@ def corridor_mask(traj, j, pose, uv_lidar, *, max_path, half_width, ground_offse
 # ------------------------------------------------------------------ pipeline
 
 def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = False,
-                   chunk: int = 256) -> bool:
-    """Materialize ``trav_traj``, ``lidar_uv`` and ``trav_mask`` on one recording.
+                   keep_uv: bool = False, chunk: int = 256) -> bool:
+    """Materialize ``trav_traj`` and ``trav_mask`` on one recording.
+
+    The mask is stored as grayscale PNG (loader ``"img"``) — lossless and ~50x
+    smaller than raw arrays.  ``lidar_uv`` is persisted only with ``keep_uv``:
+    it is deterministic from scan + calibration, so it can be regenerated on
+    demand instead of costing ~2 GB per recording.
 
     Returns ``True`` when channels were written, ``False`` when they already
     existed and ``overwrite`` was not set.  Tunables live in :mod:`.config`.
@@ -217,12 +222,17 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
         occlusion_bin_px=config.OCCLUSION_BIN_PX,
     )
 
+    mask_dir = seq_dir / config.TRAV_MASK
+    mask_dir.mkdir()
     writer_args = dict(loader="npys", timestamps_from=LIDAR)
+    uv_writer = (
+        ChannelWriter(seq_dir, config.LIDAR_UV, sources=[LIDAR], **writer_args)
+        if keep_uv
+        else nullcontext()
+    )
     with (
         ChannelWriter(seq_dir, config.TRAV_TRAJ, sources=[LIDAR, poses_key], **writer_args) as w_traj,
-        ChannelWriter(seq_dir, config.LIDAR_UV, sources=[LIDAR], **writer_args) as w_uv,
-        ChannelWriter(seq_dir, config.TRAV_MASK,
-                      sources=[config.TRAV_TRAJ, config.LIDAR_UV, poses_key], **writer_args) as w_mask,
+        uv_writer as w_uv,
     ):
         for a in range(0, n, chunk):
             b = min(a + chunk, n)
@@ -254,19 +264,37 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
                 stem = f"{i:06d}"
                 ts = float(lidar_ts[i])
                 w_traj.add(np.asarray(labels[j], dtype=np.uint8), stem=stem, timestamp=ts)
-                w_uv.add(uv, stem=stem, timestamp=ts)
-                w_mask.add(mask, stem=stem, timestamp=ts)
+                if w_uv is not None:
+                    w_uv.add(uv, stem=stem, timestamp=ts)
+                Image.fromarray(mask, mode="L").save(mask_dir / f"{stem}.png")
             logger.debug("%s: [%d, %d) / %d", seq_dir.name, a, b, n)
+
+    np.savetxt(mask_dir / "timestamps.txt", lidar_ts[:n])
+    TartanKittiDataset.register_channel(
+        seq_dir, config.TRAV_MASK, "img",
+        timestamps_from=LIDAR, sources=[config.TRAV_TRAJ, poses_key],
+    )
     logger.info("%s: labeled (%d frames)", seq_dir.name, n)
     return True
 
 
-def label_root(root, *, overwrite: bool = False) -> None:
-    """Label every recording under ``root`` (or ``root`` itself, if a sequence)."""
+def label_root(root, *, overwrite: bool = False, keep_uv: bool = False) -> None:
+    """Label every recording under ``root`` (or ``root`` itself, if a sequence).
+
+    A recording that cannot be labeled (missing poses, malformed channel) is
+    reported and skipped — one bad sequence must not kill a fleet-wide run.
+    """
     probe = TartanKittiDataset(root, keys=[LIDAR])
     if getattr(probe, "_is_root", False):
         seq_dirs = [s.root_dir for s in probe.sequences]
     else:
         seq_dirs = [Path(root)]
+    failed = []
     for seq_dir in seq_dirs:
-        label_sequence(seq_dir, overwrite=overwrite)
+        try:
+            label_sequence(seq_dir, overwrite=overwrite, keep_uv=keep_uv)
+        except Exception as exc:  # noqa: BLE001 -- survey run, report at the end
+            failed.append(Path(seq_dir).name)
+            logger.warning("%s: failed — %s", Path(seq_dir).name, exc)
+    if failed:
+        logger.warning("%d/%d recording(s) failed: %s", len(failed), len(seq_dirs), ", ".join(failed))

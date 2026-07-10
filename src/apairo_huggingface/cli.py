@@ -20,8 +20,10 @@ def label_main(argv=None):
                         help="TartanDrive root (many recordings) or a single sequence directory")
     parser.add_argument("--overwrite", action="store_true",
                         help="relabel recordings whose channels already exist")
+    parser.add_argument("--keep-uv", action="store_true",
+                        help="also persist lidar_uv (~2 GB/recording; recomputable on demand)")
     args = parser.parse_args(argv)
-    label_root(args.root, overwrite=args.overwrite)
+    label_root(args.root, overwrite=args.overwrite, keep_uv=args.keep_uv)
 
 
 def main(argv=None):
