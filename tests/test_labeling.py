@@ -67,6 +67,22 @@ def test_mask_contains_dense_corridor(seq):
     assert (mask == 255).any()    # sky / unobserved
 
 
+def test_corridor_handles_near_stationary_trajectory():
+    # Remaining path shorter than one interpolation step (robot stopping):
+    # no corridor, no crash (np.gradient needs at least two samples).
+    from apairo_huggingface.labeling import corridor_edges, corridor_mask
+
+    traj = np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]])
+    left, right = corridor_edges(traj, 0, max_path=40.0, half_width=0.8, ground_offset=-1.77)
+    assert len(left) == 0 and len(right) == 0
+
+    mask = corridor_mask(
+        traj, 0, np.eye(4), np.full((1, 3), np.nan, dtype=np.float32),
+        max_path=40.0, half_width=0.8, ground_offset=-1.77,
+    )
+    assert not mask.any()
+
+
 def test_relabel_skips_unless_overwrite(seq):
     assert label_sequence(seq) is True
     before = _mask(seq)

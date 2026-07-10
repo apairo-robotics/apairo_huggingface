@@ -50,6 +50,17 @@ LIDAR = "velodyne_0"
 _EMPTY_SCAN = np.zeros((0, 3), dtype=np.float32)
 
 
+def _remove_channel(seq_dir: Path, channel: str) -> None:
+    """Drop a channel, registered or not (partial writes never register)."""
+    import shutil
+
+    try:
+        TartanKittiDataset.remove_channel(seq_dir, channel, data=True)
+    except KeyError:
+        pass
+    shutil.rmtree(seq_dir / channel, ignore_errors=True)
+
+
 # --------------------------------------------------------------------- poses
 
 def load_poses(seq_dir: Path, key: str) -> tuple[np.ndarray, np.ndarray]:
@@ -103,6 +114,8 @@ def corridor_edges(traj, j, max_path, half_width, ground_offset, step_l=0.3):
     pos, path = pos[:end], path[:end]
 
     s = np.arange(0.0, path[-1], step_l)
+    if len(s) < 2:  # remaining path shorter than one step (robot stopping)
+        return empty, empty
     x = np.interp(s, path, pos[:, 0])
     y = np.interp(s, path, pos[:, 1])
     z = np.interp(s, path, pos[:, 2]) + ground_offset
@@ -188,11 +201,16 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
     seq_dir = Path(seq_dir)
     channels = (config.TRAV_TRAJ, config.LIDAR_UV, config.TRAV_MASK)
     existing = [c for c in channels if (seq_dir / c).exists()]
-    if existing and not overwrite:
+    # The mask's timestamps.txt is written last: present = the labeling pass
+    # finished. Channels without it are leftovers of an interrupted run.
+    complete = (seq_dir / config.TRAV_MASK / "timestamps.txt").exists()
+    if existing and complete and not overwrite:
         logger.info("%s: already labeled, skipping (overwrite=True to redo)", seq_dir.name)
         return False
+    if existing and not complete:
+        logger.info("%s: stale partial channels, relabeling", seq_dir.name)
     for c in existing:
-        TartanKittiDataset.remove_channel(seq_dir, c, data=True)
+        _remove_channel(seq_dir, c)
 
     ds = TartanKittiDataset(seq_dir, keys=[LIDAR])
     lidar_ts = np.asarray(ds.timestamps[LIDAR])
