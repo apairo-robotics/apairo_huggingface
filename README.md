@@ -1,9 +1,9 @@
 # apairo-huggingface
 
-Export [apairo](https://github.com/apairo-robotics/apairo) robotics datasets to
-the HuggingFace **LeRobotDataset** format. The first worked bridge: raw
-**TartanDrive v2** offroad-driving recordings → a LeRobotDataset ready for policy
-training on the Hub.
+Label and export [apairo](https://github.com/apairo-robotics/apairo) robotics
+datasets to the HuggingFace **LeRobotDataset** format. The first worked bridge:
+raw **TartanDrive v2** offroad-driving recordings → self-supervised
+traversability labels → a LeRobotDataset ready for policy training on the Hub.
 
 ## Why it's small
 
@@ -11,33 +11,41 @@ TartanDrive is an asynchronous, multi-rate sensor rig — camera, GPS/odometry a
 drive commands each tick on their own clock, one channel per file. LeRobot wants
 the opposite: synchronous, per-episode frames with every modality aligned.
 
-apairo closes that gap on the read side, so **there is no bespoke domain code**:
-the per-frame value ops are `apairo_transform` callables (`ChannelSelect` +
-`CastTo`) chained onto the synchronized view, and the frame is pure naming:
+apairo closes that gap on the read side, so **there is no bespoke domain code**
+in the export: the per-frame value ops are `apairo_transform` callables
+(`ChannelSelect` + `CastTo`) chained onto the synchronized view, and the frame
+is pure naming:
 
 | LeRobot feature | ← TartanDrive channel | transform |
 |---|---|---|
 | `observation.images.front` | `image_left_color` (H×W×3 uint8) | as-is (identity) |
+| `observation.traversability_mask` | `trav_mask` (H×W uint8, from `.labeling`) | replicate to RGB (lossless image) |
 | `observation.state` | `gps_odom` | `ChannelSelect(range(7))` → pose, `CastTo(float32)` |
 | `action` | `cmd` | `CastTo(float32)` → `[linear_velocity, angular_velocity]` |
+
+The `trav_mask` channel does not exist in the raw recordings — `.labeling`
+creates it, from `apairo_preprocess` primitives (see below).
 
 ## Layout
 
 ```
 src/apairo_huggingface/
-  config.py      channels, sync params, task, feature dims
+  config.py      channels, sync + labeling params, task, feature dims
+  calibration.py the TartanDrive rig: rectified intrinsics + velodyne→camera tf
+  labeling.py    trajectory traversability -> trav_traj / lidar_uv / trav_mask
   mappings.py    channel transforms (ChannelSelect / CastTo) + frame naming
   features.py    build_features — the LeRobot schema, sized from a real frame
   export.py      to_lerobot() — the reusable sink; validate() — the dry-run
-  cli.py         apairo-tartan-export
+  cli.py         apairo-tartan-label · apairo-tartan-export
 examples/
   export_tartan_to_lerobot.py   thin, linear entry point
   load_tartan_views.py          the same raw data as lidar / IMU / windowed / DataLoader views
 hub/
   dataset_card.md               the Hub dataset card, ready to upload
 tests/
-  conftest.py    synthetic TartanDrive fixture
-  test_export.py dry-run + export + reload round-trip
+  conftest.py       synthetic TartanDrive fixture (geometry matches the real rig)
+  test_labeling.py  channels written + registered, label semantics, idempotence
+  test_export.py    dry-run + export + reload round-trip
 ```
 
 The interesting file is `export.py`: `to_lerobot` reads top to bottom as
@@ -91,13 +99,26 @@ straight into the exporter below via `--root`.
 ## Use
 
 ```bash
-# Validate the apairo read pipeline only — no lerobot, no writes.
+# 1. Label: write trav_traj / lidar_uv / trav_mask on every recording.
+#    Needs per-scan poses (gicp_poses; else run apairo_preprocess.KissICPOdometry).
+apairo-tartan-label --root /path/to/tartan
+
+# 2. Validate the apairo read pipeline only — no lerobot, no writes.
 apairo-tartan-export --dry-run --root /path/to/tartan
 
-# Build a LeRobotDataset locally, or push to the Hub (needs `huggingface-cli login`).
+# 3. Build a LeRobotDataset locally, or push to the Hub (needs `huggingface-cli login`).
 apairo-tartan-export --no-push --root /path/to/tartan
 apairo-tartan-export --repo-id <user>/tartandrive_offroad --root /path/to/tartan
 ```
+
+The labels are self-supervised — where the robot actually drove: the future
+trajectory labels the lidar points inside the robot footprint
+(`TraversabilityFromTrajectory`, path-length capped), the scan projects into
+the left camera (`LidarCameraProjection`, rig in `calibration.py`), and the
+mask is the splatted point labels plus the **driven corridor** rasterized as
+filled quads — dense coverage, occlusion-aware. All primitives are
+[`apairo_preprocess`](https://github.com/apairo-robotics/apairo_preprocess);
+`labeling.py` is the ~100-line composition.
 
 Or as a library:
 

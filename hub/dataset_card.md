@@ -9,19 +9,25 @@ tags:
   - tartandrive
   - off-road
   - autonomous-driving
+  - traversability
   - apairo
-pretty_name: TartanDrive Off-Road (LeRobot format)
+pretty_name: TartanDrive Off-Road Traversability (LeRobot format)
 ---
 
-# TartanDrive Off-Road — LeRobotDataset
+# TartanDrive Off-Road Traversability — LeRobotDataset
 
 > **This dataset is a demonstration of a data pipeline.** All 54 episodes /
-> ~119k frames were generated from raw, *asynchronous* TartanDrive 2.0 rosbags,
-> and the only code specific to this conversion is **~17 lines of
-> channel→feature mapping**. Everything hard — loading multi-rate sensors,
-> time-aligning them, cutting episodes — is done by
-> [**apairo**](https://github.com/apairo-robotics/apairo). The interesting part
-> isn't the data, it's *how little, and how clearly, it takes to get there.*
+> ~119k frames were generated from raw, *asynchronous* TartanDrive 2.0 rosbags —
+> **including a per-pixel traversability ground truth that does not exist in
+> the raw data**: it is derived, self-supervised, from where the robot actually
+> drove. The conversion is **~17 lines of channel→feature mapping** plus a
+> ~100-line labeling composition of
+> [`apairo_preprocess`](https://github.com/apairo-robotics/apairo_preprocess)
+> primitives. Everything hard — loading multi-rate sensors, time-aligning them,
+> cutting episodes, projecting between sensors — is done by
+> [**apairo**](https://github.com/apairo-robotics/apairo) and its satellites.
+> The interesting part isn't the data, it's *how little, and how clearly, it
+> takes to get there.*
 
 ## The entire conversion
 
@@ -89,20 +95,50 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 dataset = LeRobotDataset("apairo-robotics/tartandrive_offroad")
 frame = dataset[0]
-frame["observation.images.front"]  # (H, W, 3) front camera
-frame["observation.state"]         # [x, y, z, qx, qy, qz, qw] pose
-frame["action"]                    # [linear_velocity, angular_velocity]
+frame["observation.images.front"]           # (H, W, 3) front camera
+frame["observation.traversability_mask"]    # (H, W, 3) labels: 1 / 0 / 255
+frame["observation.state"]                  # [x, y, z, qx, qy, qz, qw] pose
+frame["action"]                             # [linear_velocity, angular_velocity]
 ```
 
 | Feature | Shape | Source (TartanDrive channel) |
 |---|---|---|
 | `observation.images.front` | (H, W, 3) uint8 video | `image_left_color` — left colour camera |
+| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` traversable, `0` not, `255` no data |
 | `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` |
 | `action` | (2,) float32 | `cmd` — `[linear_velocity, angular_velocity]` |
 
 - **fps**: 10 (camera clock) · **robot_type**: `tartandrive` (Yamaha Viking ATV)
   · **task**: `drive off-road`
 - 54 recordings → 54 episodes, ~119k synchronized frames.
+- The mask is stored as lossless PNG (`image`), not mp4 (`video`): compression
+  must not corrupt label values. Single channel replicated to RGB; read any one.
+
+## The traversability channel
+
+Where the robot drove is free ground truth. Per camera frame, on the nearest
+lidar scan:
+
+1. **Points** — lidar points inside the robot footprint swept along the
+   *future* trajectory are traversable
+   (`TraversabilityFromTrajectory`, look-ahead capped at 40 m of path so a
+   looping trajectory cannot label distant terrain);
+2. **Projection** — the scan projects into the rectified left camera
+   (`LidarCameraProjection`; intrinsics = the multisense `P`, extrinsics
+   composed from the upstream `extrinsics.yaml`);
+3. **Mask** — point labels splat with nearest-depth-wins and a coarse z-buffer
+   (`ImageMaskFromPointLabels`), then the **driven corridor** — the footprint
+   ribbon interpolated along the future path — is rasterized on top as filled
+   quads, occlusion-checked against the lidar returns.  The labeled passage is
+   dense, not a set of lidar rings.
+
+Labels are conservative by construction: `1` is *demonstrated* traversability
+(the platform drove there), `0` is lidar-observed terrain the platform did not
+drive, `255` is unobserved.  Reproduce with `apairo-tartan-label --root ...`;
+the primitives are
+[`apairo_preprocess`](https://github.com/apairo-robotics/apairo_preprocess),
+the composition is
+[`labeling.py`](https://github.com/apairo-robotics/apairo_huggingface/blob/main/src/apairo_huggingface/labeling.py).
 
 ## One raw dataset, many views
 
