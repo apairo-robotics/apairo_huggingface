@@ -113,8 +113,11 @@ frame["action"]                             # [linear_velocity, angular_velocity
 - 54 recordings → 54 episodes, ~119k synchronized frames.
 - The mask is stored as lossless PNG (`image`), not mp4 (`video`): compression
   must not corrupt label values. Single channel replicated to RGB; read any one.
+- The lidar *produces* the labels; it is not part of the published dataset.
 
 ## The traversability channel
+
+![The driven corridor projected into the camera — real frame, real labels](trav_mask_overlay.jpg)
 
 Where the robot drove is free ground truth. Per camera frame, on the nearest
 lidar scan:
