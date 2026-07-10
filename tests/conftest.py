@@ -1,5 +1,12 @@
-"""A tiny synthetic dataset in TartanDrive's on-disk layout, so the export can be
-exercised end to end without the (large, undistributed) real recordings."""
+"""A tiny synthetic dataset in TartanDrive's on-disk layout, so the labeling
+and the export can be exercised end to end without the (large, undistributed)
+real recordings.
+
+The lidar/pose geometry is consistent with the *real* rig calibration baked in
+:mod:`apairo_huggingface.calibration`: the robot drives along +x with the
+ground plane 1.77 m below the velodyne, so the trajectory labeler and the
+corridor rasterizer produce non-trivial labels in the 1024x544 left camera.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +14,26 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from apairo_huggingface import label_sequence
+
 H, W, N = 48, 64, 6           # small, even dimensions (video encoder friendly)
 BASE, STEP = 1_700_000_000.0, 0.1
+DRIVE_STEP = 1.0              # metres between consecutive poses (along +x)
+GROUND_Z = -1.77              # ground height below the velodyne
 
 
 def _timestamps(path, n):
     path.write_text("".join(f"{BASE + i * STEP:.9e}\n" for i in range(n)))
+
+
+def _scan():
+    """Sensor-frame ground grid ahead of the robot, plus a small obstacle."""
+    gx, gy = np.meshgrid(np.arange(1.0, 15.0, 0.5), np.arange(-3.0, 3.0, 0.25))
+    ground = np.column_stack([gx.ravel(), gy.ravel(), np.full(gx.size, GROUND_Z)])
+    obstacle = np.column_stack(
+        [np.full(20, 6.0), np.full(20, 2.0), np.linspace(GROUND_Z, 0.5, 20)]
+    )
+    return np.vstack([ground, obstacle]).astype(np.float32)
 
 
 def _write_sequence(seq):
@@ -36,13 +57,37 @@ def _write_sequence(seq):
     np.save(cmd / "twist.npy", twist)
     _timestamps(cmd / "timestamps.txt", N)
 
+    lidar = seq / "velodyne_0"
+    lidar.mkdir()
+    for i in range(N):
+        np.save(lidar / f"{i:06d}.npy", _scan())
+    _timestamps(lidar / "timestamps.txt", N)
+
+    poses_dir = seq / "gicp_poses"
+    poses_dir.mkdir()
+    poses = np.tile(np.eye(4), (N, 1, 1))
+    poses[:, 0, 3] = np.arange(N) * DRIVE_STEP
+    np.save(poses_dir / "poses.npy", poses)
+    _timestamps(poses_dir / "timestamps.txt", N)
+
 
 @pytest.fixture
-def tartan_root(tmp_path):
-    """A TartanDrive root with two recordings (=> two episodes)."""
+def tartan_root_raw(tmp_path):
+    """A TartanDrive root with two raw (unlabeled) recordings."""
     for ep in ("forest_00", "forest_01"):
         _write_sequence(tmp_path / ep)
     return str(tmp_path)
+
+
+@pytest.fixture
+def tartan_root(tartan_root_raw):
+    """The same root, labeled (=> exportable with the traversability mask)."""
+    from pathlib import Path
+
+    for seq in sorted(Path(tartan_root_raw).iterdir()):
+        if seq.is_dir():
+            label_sequence(seq)
+    return tartan_root_raw
 
 
 @pytest.fixture

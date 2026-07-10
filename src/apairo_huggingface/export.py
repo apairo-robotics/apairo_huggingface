@@ -17,14 +17,16 @@ from .mappings import CHANNEL_TRANSFORMS, frame_of
 
 
 def load_tartan(root: str):
-    """Load the TartanDrive channels needed for the camera+state+action triplet.
+    """Load the TartanDrive channels feeding the export: camera, state, action,
+    and the traversability mask written by :mod:`.labeling`.
 
     ``root`` may be a TartanDrive root (many recordings) or a single sequence.
     A root construction fails as a whole when any sequence lacks a channel
-    (e.g. one recording was downloaded without the camera modality); in that
-    case fall back to probing per sequence and keep only the complete ones.
+    (e.g. one recording was downloaded without the camera modality, or was
+    never labeled); in that case fall back to probing per sequence and keep
+    only the complete ones.
     """
-    keys = [config.CAMERA, config.STATE, config.ACTION]
+    keys = [config.CAMERA, config.STATE, config.ACTION, config.TRAV_MASK]
     try:
         return TartanKittiDataset(root, keys=keys)
     except KeyError:

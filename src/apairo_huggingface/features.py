@@ -15,10 +15,18 @@ def build_features(probe: Sample) -> dict:
     concatenated and encoded to MP4 by LeRobot).
     """
     height, width, _ = probe.data[config.CAMERA].shape
+    mask_height, mask_width = probe.data[config.TRAV_MASK].shape
     return {
         "observation.images.front": {
             "dtype": "video",
             "shape": (height, width, 3),
+            "names": ["height", "width", "channel"],
+        },
+        # "image" (lossless PNG), not "video": mp4 compression would corrupt
+        # the {0, 1, 255} label values. Single-channel mask replicated to RGB.
+        "observation.traversability_mask": {
+            "dtype": "image",
+            "shape": (mask_height, mask_width, 3),
             "names": ["height", "width", "channel"],
         },
         "observation.state": {

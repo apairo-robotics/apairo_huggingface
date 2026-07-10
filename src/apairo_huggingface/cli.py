@@ -1,4 +1,4 @@
-"""Command-line entry point: TartanDrive -> LeRobotDataset."""
+"""Command-line entry points: label TartanDrive, then export it to LeRobot."""
 
 from __future__ import annotations
 
@@ -6,6 +6,22 @@ import argparse
 import os
 
 from .export import load_tartan, to_lerobot, validate
+
+
+def label_main(argv=None):
+    """``apairo-tartan-label`` — materialize the traversability channels."""
+    from .labeling import label_root
+
+    parser = argparse.ArgumentParser(
+        description="Label TartanDrive recordings with trajectory traversability "
+        "(writes trav_traj, lidar_uv and trav_mask channels)."
+    )
+    parser.add_argument("--root", default=os.environ.get("APAIRO_TARTAN_ROOT", "/data/tartan"),
+                        help="TartanDrive root (many recordings) or a single sequence directory")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="relabel recordings whose channels already exist")
+    args = parser.parse_args(argv)
+    label_root(args.root, overwrite=args.overwrite)
 
 
 def main(argv=None):

@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apairo-huggingface"
 version = "0.1.0"
-description = "Export apairo robotics datasets to HuggingFace LeRobotDataset format."
+description = "Label apairo robotics datasets and export them to HuggingFace LeRobotDataset format."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "apairo",
+    "apairo_preprocess",
     "apairo_transform",
     "lerobot>=0.4.0",
     "numpy",
@@ -20,6 +21,7 @@ dependencies = [
 test = ["pytest"]
 
 [project.scripts]
+apairo-tartan-label = "apairo_huggingface.cli:label_main"
 apairo-tartan-export = "apairo_huggingface.cli:main"
 
 [tool.setuptools.packages.find]

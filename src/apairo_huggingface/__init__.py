@@ -12,6 +12,7 @@ from __future__ import annotations
 from . import config
 from .export import aligned_frames, episodes, load_tartan, to_lerobot, validate
 from .features import build_features
+from .labeling import label_root, label_sequence
 from .mappings import CHANNEL_TRANSFORMS, frame_of
 
 __all__ = [
@@ -24,4 +25,6 @@ __all__ = [
     "build_features",
     "frame_of",
     "CHANNEL_TRANSFORMS",
+    "label_sequence",
+    "label_root",
 ]

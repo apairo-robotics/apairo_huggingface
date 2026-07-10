@@ -28,8 +28,10 @@ def frame_of(sample) -> dict:
 
     Pure naming: ``task`` is a key of the frame dict in LeRobotDataset v3.
     """
+    mask = np.asarray(sample.data[config.TRAV_MASK])
     return {
         "observation.images.front": sample.data[config.CAMERA],
+        "observation.traversability_mask": np.repeat(mask[:, :, None], 3, axis=2),
         "observation.state": sample.data[config.STATE],
         "action": sample.data[config.ACTION],
         "task": config.TASK,
