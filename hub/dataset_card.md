@@ -104,7 +104,7 @@ frame["action"]                             # [linear_velocity, angular_velocity
 | Feature | Shape | Source (TartanDrive channel) |
 |---|---|---|
 | `observation.images.front` | (H, W, 3) uint8 video | `image_left_color` — left colour camera |
-| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` driven (traversable), `0` lidar return **without traversability information** (not an obstacle label), `255` unobserved |
+| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` driven (traversable), `0` lidar points (no label information), `255` unobserved |
 | `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` |
 | `action` | (2,) float32 | `cmd` — `[linear_velocity, angular_velocity]` |
 
@@ -136,14 +136,9 @@ lidar scan:
    dense, not a set of lidar rings.
 
 Labels are conservative by construction: `1` is *demonstrated* traversability
-(the platform drove there); `255` is unobserved.  **`0` carries no
-traversability information**: it marks a lidar return the platform did not
-drive over — flat, perfectly drivable ground the robot simply did not visit is
-`0` exactly like a tree trunk is (which is why `0` traces the sensor's ring
-pattern).  Do not read `0` as an obstacle class: treat it as
-*measured-but-unlabeled* (a positive-unlabeled setting) unless you derive your
-own negatives, e.g. from point height above ground.  Reproduce with
-`apairo-tartan-label --root ...`;
+(the platform drove there), `0` marks the projected lidar points — measured,
+no label information (hence the ring pattern) — and `255` is unobserved.
+Reproduce with `apairo-tartan-label --root ...`;
 the primitives are
 [`apairo_preprocess`](https://github.com/apairo-robotics/apairo_preprocess),
 the composition is
