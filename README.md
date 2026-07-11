@@ -34,8 +34,10 @@ Per lidar scan, three `apairo_preprocess` preprocessors compose
 The corridor is what makes the mask *dense*: the footprint ribbon interpolated
 along the future trajectory fills the whole driven passage instead of a set of
 lidar rings. Labels are conservative by construction — `1` is *demonstrated*
-traversability (the platform drove there), `0` is observed terrain it did not
-drive, `255` is unobserved.
+traversability (the platform drove there), `255` is unobserved, and **`0`
+carries no traversability information**: it marks a lidar return the platform
+did not drive over (undriven flat ground as much as a tree trunk — hence the
+ring pattern). Treat `0` as measured-but-unlabeled, not as an obstacle class.
 
 The rig (rectified multisense `P`, vehicle→optical extrinsic) lives in
 [`calibration.py`](src/apairo_huggingface/calibration.py) with its provenance;

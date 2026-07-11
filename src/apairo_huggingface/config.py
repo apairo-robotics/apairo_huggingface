@@ -10,7 +10,8 @@ from __future__ import annotations
 CAMERA = "image_left_color"   # (H, W, 3) uint8  -- left colour camera
 STATE = "gps_odom"            # nav_msgs/Odometry row: pose (7) + twist (6)
 ACTION = "cmd"                # twist command [linear_velocity, angular_velocity]
-TRAV_MASK = "trav_mask"       # (H, W) uint8 -- written by .labeling (1/0/255)
+TRAV_MASK = "trav_mask"       # (H, W) uint8 -- written by .labeling
+                              # 1 driven / 0 lidar-seen, no info / 255 unobserved
 
 # --- Traversability labeling (see .labeling) ------------------------------- #
 POSES = "gicp_poses"          # per-scan (4, 4) poses on the lidar clock

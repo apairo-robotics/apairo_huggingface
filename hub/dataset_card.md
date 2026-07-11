@@ -96,7 +96,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 dataset = LeRobotDataset("apairo-robotics/tartandrive_offroad")
 frame = dataset[0]
 frame["observation.images.front"]           # (H, W, 3) front camera
-frame["observation.traversability_mask"]    # (H, W, 3) labels: 1 / 0 / 255
+frame["observation.traversability_mask"]    # 1 driven / 0 lidar-seen, no info / 255 unobserved
 frame["observation.state"]                  # [x, y, z, qx, qy, qz, qw] pose
 frame["action"]                             # [linear_velocity, angular_velocity]
 ```
@@ -104,7 +104,7 @@ frame["action"]                             # [linear_velocity, angular_velocity
 | Feature | Shape | Source (TartanDrive channel) |
 |---|---|---|
 | `observation.images.front` | (H, W, 3) uint8 video | `image_left_color` — left colour camera |
-| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` traversable, `0` not, `255` no data |
+| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` driven (traversable), `0` lidar return **without traversability information** (not an obstacle label), `255` unobserved |
 | `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` |
 | `action` | (2,) float32 | `cmd` — `[linear_velocity, angular_velocity]` |
 
@@ -136,8 +136,14 @@ lidar scan:
    dense, not a set of lidar rings.
 
 Labels are conservative by construction: `1` is *demonstrated* traversability
-(the platform drove there), `0` is lidar-observed terrain the platform did not
-drive, `255` is unobserved.  Reproduce with `apairo-tartan-label --root ...`;
+(the platform drove there); `255` is unobserved.  **`0` carries no
+traversability information**: it marks a lidar return the platform did not
+drive over — flat, perfectly drivable ground the robot simply did not visit is
+`0` exactly like a tree trunk is (which is why `0` traces the sensor's ring
+pattern).  Do not read `0` as an obstacle class: treat it as
+*measured-but-unlabeled* (a positive-unlabeled setting) unless you derive your
+own negatives, e.g. from point height above ground.  Reproduce with
+`apairo-tartan-label --root ...`;
 the primitives are
 [`apairo_preprocess`](https://github.com/apairo-robotics/apairo_preprocess),
 the composition is
