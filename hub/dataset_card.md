@@ -16,8 +16,8 @@ pretty_name: TartanDrive Off-Road Traversability (LeRobot format)
 
 # TartanDrive Off-Road Traversability — LeRobotDataset
 
-> **This dataset is a demonstration of a data pipeline.** All 54 episodes /
-> ~119k frames were generated from raw, *asynchronous* TartanDrive 2.0 rosbags —
+> **This dataset is a demonstration of a data pipeline.** All 55 episodes /
+> ~124k frames were generated from raw, *asynchronous* TartanDrive 2.0 rosbags —
 > **including a per-pixel traversability ground truth that does not exist in
 > the raw data**: it is derived, self-supervised, from where the robot actually
 > drove. The conversion is **~17 lines of channel→feature mapping** plus a
@@ -110,7 +110,7 @@ frame["action"]                             # [linear_velocity, angular_velocity
 
 - **fps**: 10 (camera clock) · **robot_type**: `tartandrive` (Yamaha Viking ATV)
   · **task**: `drive off-road`
-- 54 recordings → 54 episodes, ~119k synchronized frames.
+- 55 recordings → 55 episodes, 123,786 synchronized frames.
 - The mask is stored as lossless PNG (`image`), not mp4 (`video`): compression
   must not corrupt label values. Single channel replicated to RGB; read any one.
 - The lidar *produces* the labels; it is not part of the published dataset.
