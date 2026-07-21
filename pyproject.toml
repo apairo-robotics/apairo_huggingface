@@ -13,6 +13,7 @@ dependencies = [
     "apairo_preprocess",
     "apairo_transform",
     "lerobot>=0.4.0",
+    "datasets>=4.0",
     "numpy",
     "Pillow",
 ]
@@ -23,6 +24,8 @@ test = ["pytest"]
 [project.scripts]
 apairo-tartan-label = "apairo_huggingface.cli:label_main"
 apairo-tartan-export = "apairo_huggingface.cli:main"
+apairo-tartan-gt-label = "apairo_huggingface.cli:gt_label_main"
+apairo-tartan-gt-export = "apairo_huggingface.cli:gt_export_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

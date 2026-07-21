@@ -10,6 +10,8 @@ The TartanDrive -> LeRobot bridge, built on apairo's read side. Public API:
 from __future__ import annotations
 
 from . import config
+from .eval_export import load_eval_sequences, to_eval_dataset, validate_eval
+from .eval_labeling import label_ground_truth_root, label_ground_truth_sequence
 from .export import aligned_frames, episodes, load_tartan, to_lerobot, validate
 from .features import build_features
 from .labeling import label_root, label_sequence
@@ -27,4 +29,9 @@ __all__ = [
     "CHANNEL_TRANSFORMS",
     "label_sequence",
     "label_root",
+    "label_ground_truth_sequence",
+    "label_ground_truth_root",
+    "load_eval_sequences",
+    "to_eval_dataset",
+    "validate_eval",
 ]

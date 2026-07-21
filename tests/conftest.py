@@ -10,6 +10,8 @@ corridor rasterizer produce non-trivial labels in the 1024x544 left camera.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -71,6 +73,39 @@ def _write_sequence(seq):
     _timestamps(poses_dir / "timestamps.txt", N)
 
 
+GT_INDICES = (0, 2)  # a hand-labeled subset -- ground_truth is sparse by nature
+
+
+def _write_ground_truth(seq, indices=GT_INDICES):
+    """A synthetic toaster import: sparse per-point 0/1/2 labels on a subset
+    of scans, row-aligned with ``velodyne_0`` -- matches
+    apairo_experiments/scripts/import_toaster_gt.py's on-disk convention
+    (including the ``ground_truth`` channel registration it performs)."""
+    from apairo import TartanKittiDataset
+
+    # Bootstrap .apairo/channels.yaml from the raw layout *before* registering
+    # ground_truth -- once the sidecar exists, apairo stops auto-discovering
+    # channels from disk, same ordering apairo_experiments' toaster importer
+    # relies on (it constructs a RawDataset before it registers anything).
+    TartanKittiDataset(seq, keys=["velodyne_0"])
+
+    lidar_ts = np.loadtxt(seq / "velodyne_0" / "timestamps.txt").reshape(-1)
+    gt = seq / "ground_truth"
+    gt.mkdir()
+    stamps = []
+    for i in indices:
+        scan = np.load(seq / "velodyne_0" / f"{i:06d}.npy")
+        ground = scan[:, 2] == np.float32(GROUND_Z)
+        labels = np.where(ground, 1, 2).astype(np.int32)  # ground traversable, obstacle not
+        labels[0] = 0  # one point left unlabeled, like a real partial pass
+        np.save(gt / f"{i:06d}.npy", labels)
+        stamps.append(lidar_ts[i])
+    np.savetxt(gt / "timestamps.txt", np.asarray(stamps))
+    TartanKittiDataset.register_channel(
+        seq, "ground_truth", "npys", timestamps_from="velodyne_0", sources=["velodyne_0"]
+    )
+
+
 @pytest.fixture
 def tartan_root_raw(tmp_path):
     """A TartanDrive root with two raw (unlabeled) recordings."""
@@ -80,10 +115,15 @@ def tartan_root_raw(tmp_path):
 
 
 @pytest.fixture
+def tartan_root_gt(tartan_root_raw):
+    """The raw root, plus hand-labeled ``ground_truth`` on part of one recording."""
+    _write_ground_truth(Path(tartan_root_raw) / "forest_00")
+    return tartan_root_raw
+
+
+@pytest.fixture
 def tartan_root(tartan_root_raw):
     """The same root, labeled (=> exportable with the traversability mask)."""
-    from pathlib import Path
-
     for seq in sorted(Path(tartan_root_raw).iterdir()):
         if seq.is_dir():
             label_sequence(seq)

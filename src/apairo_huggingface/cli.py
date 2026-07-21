@@ -26,6 +26,50 @@ def label_main(argv=None):
     label_root(args.root, overwrite=args.overwrite, keep_uv=args.keep_uv)
 
 
+def gt_label_main(argv=None):
+    """``apairo-tartan-gt-label`` — project hand-labeled point clouds into trav_mask_gt."""
+    from .eval_labeling import label_ground_truth_root
+
+    parser = argparse.ArgumentParser(
+        description="Project hand-labeled ground_truth point clouds (written by "
+        "apairo_experiments/scripts/import_toaster_gt.py) into a trav_mask_gt image "
+        "channel, per recording. Recordings without hand labels are skipped."
+    )
+    parser.add_argument("--root", default=os.environ.get("APAIRO_TARTAN_ROOT", "/data/tartan"),
+                        help="TartanDrive root (many recordings) or a single sequence directory")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="reproject recordings whose trav_mask_gt already exists")
+    args = parser.parse_args(argv)
+    label_ground_truth_root(args.root, overwrite=args.overwrite)
+
+
+def gt_export_main(argv=None):
+    """``apairo-tartan-gt-export`` — build/push the hand-labeled eval benchmark."""
+    from .eval_export import to_eval_dataset, validate_eval
+
+    parser = argparse.ArgumentParser(
+        description="Export the hand-labeled TartanDrive eval benchmark (image + "
+        "projected mask + raw points/labels) as a plain HF dataset -- not a "
+        "LeRobotDataset, see docs/eval_benchmark.md."
+    )
+    parser.add_argument("--root", default=os.environ.get("APAIRO_TARTAN_ROOT", "/data/tartan"),
+                        help="TartanDrive root (many recordings) or a single sequence directory")
+    parser.add_argument("--repo-id", default="tartandrive_offroad_eval", help="target dataset id")
+    parser.add_argument("--no-push", action="store_true", help="build locally, do not push to the Hub")
+    parser.add_argument("--dry-run", action="store_true", help="validate reads only, without building the dataset")
+    args = parser.parse_args(argv)
+
+    if args.dry_run:
+        counts, total_points = validate_eval(args.root)
+        for name, n in counts.items():
+            print(f"  {name}: {n} labeled frame(s)")
+        print(f"\n{len(counts)} recording(s), {sum(counts.values())} frame(s), "
+              f"{total_points} point(s) -- schema OK")
+    else:
+        dataset = to_eval_dataset(args.root, args.repo_id, push=not args.no_push)
+        print(f"Wrote {len(dataset)} hand-labeled frame(s) to {args.repo_id}")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Export a TartanDrive recording to a LeRobotDataset.")
     parser.add_argument("--root", default=os.environ.get("APAIRO_TARTAN_ROOT", "/data/tartan"),

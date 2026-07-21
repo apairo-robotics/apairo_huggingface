@@ -18,12 +18,27 @@ POSES = "gicp_poses"          # per-scan (4, 4) poses on the lidar clock
 TRAV_TRAJ = "trav_traj"       # per-point labels channel
 LIDAR_UV = "lidar_uv"         # per-point [u, v, depth] channel
 FORWARD_DISTANCE = 40.0       # look-ahead cap, metres of path (loops mislabel beyond)
+# The rig is a modified Yamaha Viking (overall width 61.8in = 1.57m per the
+# manufacturer spec -> 0.785m half-width; 0.8m matches within 1.5cm).
 ROBOT_HALF_WIDTH = 0.8        # ATV footprint half-width (m)
+# TraversabilityFromTrajectory's height_min/height_max are relative to the
+# nearest future *pose* (the velodyne, ~1.77m above the ground -- see
+# GROUND_OFFSET below), not the ground directly: [-2.3, -1.2] here is
+# apairo_preprocess's own ground-relative default (-0.3m / +0.5m -- a low
+# obstacle/rock band a 0.3m-clearance UTV would actually snag on) shifted by
+# that ~1.77m rig height, i.e. effectively [-0.53m, +0.57m] around the ground.
 HEIGHT_MIN = -2.3             # height window around the ground, relative to the
 HEIGHT_MAX = -1.2             # velodyne (ground sits ~1.8 m below it)
 GROUND_OFFSET = -1.77         # corridor height relative to the pose (m)
 SPLAT_RADIUS = 2              # sparse point splat radius (px)
 OCCLUSION_BIN_PX = 8          # z-buffer bin for the point mask (px)
+
+# --- Hand-labeled ground truth (toaster; see .eval_labeling / .eval_export) - #
+# Written by apairo_experiments/scripts/import_toaster_gt.py as a sparse
+# per-point channel: 0 unlabeled / 1 traversable / 2 obstacle, one npy per
+# hand-labeled scan -- most recordings have none of it.
+GROUND_TRUTH = "ground_truth"
+TRAV_MASK_GT = "trav_mask_gt"   # (H, W) uint8 -- ground_truth projected into the camera
 
 # --- Synchronization ------------------------------------------------------- #
 # Resample every channel onto the camera clock, so each LeRobot frame carries a
