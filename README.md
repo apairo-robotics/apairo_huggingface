@@ -12,6 +12,13 @@ primitives, and the export is ~17 lines of channel→feature naming.
 
 ![The driven corridor projected into the camera — real frame, real labels](hub/trav_mask_overlay.jpg)
 
+## Published on the Hub
+
+| Repo | Format | Status |
+|---|---|---|
+| [`apairo-robotics/tartandrive_offroad`](https://huggingface.co/datasets/apairo-robotics/tartandrive_offroad) | LeRobotDataset | live — 55 episodes / 123,786 frames |
+| `apairo-robotics/tartandrive_offroad_eval` | plain `datasets.Dataset` | not yet published — pipeline ready, see [`docs/eval_benchmark.md`](docs/eval_benchmark.md) |
+
 ## The pipeline
 
 ```
@@ -97,16 +104,21 @@ src/apairo_huggingface/
   mappings.py    channel transforms (ChannelSelect / CastTo) + frame naming
   features.py    build_features — the LeRobot schema, sized from a real frame
   export.py      to_lerobot() — the reusable sink; validate() — the dry-run
-  cli.py         apairo-tartan-label · apairo-tartan-export
+  eval_labeling.py  ground_truth (toaster) -> trav_mask_gt, projected the same way as trav_mask
+  eval_export.py    trav_mask_gt + raw points -> a plain HF dataset (not LeRobot; see docs/)
+  cli.py         apairo-tartan-label · apairo-tartan-export · apairo-tartan-gt-label · apairo-tartan-gt-export
 examples/
   export_tartan_to_lerobot.py   thin, linear entry point
   load_tartan_views.py          the same raw data as lidar / IMU / windowed / DataLoader views
 hub/
   dataset_card.md               the Hub dataset card, ready to upload
+docs/
+  eval_benchmark.md             sequence selection + publishing design for the hand-labeled benchmark
 tests/
   conftest.py       synthetic TartanDrive fixture (geometry matches the real rig)
   test_labeling.py  channels written + registered, label semantics, idempotence
   test_export.py    dry-run + export + reload round-trip
+  test_eval.py      ground-truth projection + eval dataset round-trip
 ```
 
 ## Install
@@ -161,3 +173,29 @@ apairo dataset into other views with no new loader code: lidar-clock perception,
 IMU-rate dynamics, causal windows for action chunking, or a direct PyTorch
 `DataLoader`. See [`examples/load_tartan_views.py`](examples/load_tartan_views.py)
 (runs against apairo's `mini_tartan` fixture).
+
+## Hand-labeled evaluation benchmark
+
+A held-out set of hand-labeled frames (via
+[toaster](https://github.com/augustin-bresset/toaster)) to evaluate models
+with real traversable/obstacle negatives, not just the self-supervised
+`trav_mask`. Sequence selection and the publishing design are in
+[`docs/eval_benchmark.md`](docs/eval_benchmark.md); labeling the target
+sequences is in progress.
+
+```bash
+# 1. Import toaster's raw export as a 'ground_truth' apairo channel (lives in
+#    apairo_experiments/scripts/import_toaster_gt.py, one sequence at a time).
+
+# 2. Project the per-point labels into the camera -> trav_mask_gt.
+apairo-tartan-gt-label --root /path/to/tartan
+
+# 3. Build the eval benchmark (image + mask + raw points/labels) locally or push it.
+apairo-tartan-gt-export --dry-run --root /path/to/tartan
+apairo-tartan-gt-export --repo-id <user>/tartandrive_offroad_eval --root /path/to/tartan
+```
+
+This is a **plain `datasets.Dataset`**, not a LeRobotDataset: it's a curated
+frame subset (not a continuous trajectory) and its point cloud is
+ragged (LeRobotDataset features need one fixed shape). See
+[`docs/eval_benchmark.md`](docs/eval_benchmark.md) for why.
