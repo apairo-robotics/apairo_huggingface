@@ -129,6 +129,8 @@ pip install -e ../apairo -e ../apairo_preprocess   # sibling repos, editable
 pip install -e ".[test]"                           # this package + lerobot>=0.4.0
 ```
 
+> Note: `apairo_preprocess` and `apairo_transform` install editable from the `../` siblings for now, pending their own PyPI publishing.
+
 ## Getting the data
 
 TartanDrive v2 ships as ROS bags. Two steps bring them into the apairo layout
