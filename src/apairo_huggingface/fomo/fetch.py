@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 
 BUCKET = "https://fomo-dataset.s3.amazonaws.com"
-RETRIES = 8
+RETRIES = 12
 
 
 def get(url: str) -> bytes:
@@ -29,7 +29,7 @@ def get(url: str) -> bytes:
         except OSError:  # URLError, ConnectionResetError, timeouts
             if attempt == RETRIES - 1:
                 raise
-            time.sleep(min(2 ** attempt, 30))
+            time.sleep(min(2 ** attempt, 60))
     raise AssertionError("unreachable")
 
 
