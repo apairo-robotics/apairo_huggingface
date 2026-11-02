@@ -1,0 +1,24 @@
+# apairo declaration of one RELLIS-3D sequence (Rellis-3D/<seq>/), read through
+# a symlink view (see labeling.make_view) so the shared source tree is never
+# written. Passed at load time: RawDataset(view, declare=...).
+#
+# Clock: the camera filenames carry the capture time (frame<idx>-<s>_<ms>).
+# The KITTI-format scans and labels are exported co-captured with the image of
+# the same index and carry no stamp of their own, so they borrow the camera
+# clock -- the convention of apairo's own Rellis profile.
+version: 1
+channels:
+  pylon_camera_node:          # Basler acA1920, 1920x1200 RGB, 10 Hz
+    loader: img
+    key: {name: 'frame\d+-(\d+)_(\d+)', scale: [1, 0.001]}
+  pylon_camera_node_label_id: # official 2D annotation (ontology ids), ~every 2nd frame
+    loader: img
+    key: {name: 'frame\d+-(\d+)_(\d+)', scale: [1, 0.001]}
+  os1_cloud_node_kitti_bin:   # Ouster OS1-64, (N, 4) float32 x y z intensity
+    loader: bin
+    alias: lidar
+    timestamps_from: pylon_camera_node
+  os1_cloud_node_semantickitti_label_id:  # (N,) ontology ids, one per point
+    loader: semkitti_label
+    alias: labels
+    timestamps_from: pylon_camera_node

@@ -29,15 +29,18 @@ apairo-tartan-export = "apairo_huggingface.cli:main"
 apairo-tartan-gt-label = "apairo_huggingface.cli:gt_label_main"
 apairo-tartan-gt-export = "apairo_huggingface.cli:gt_export_main"
 apairo-fomo = "apairo_huggingface.fomo.cli:main"
+apairo-rellis = "apairo_huggingface.rellis.cli:main"
 
 [project.entry-points."apairo.formats"]
 fomo_bin = "apairo_huggingface.fomo.format:FomoBinFormat"
+semkitti_label = "apairo_huggingface.rellis.format:SemKittiLabelFormat"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 "apairo_huggingface.fomo" = ["apairo.yaml"]
+"apairo_huggingface.rellis" = ["apairo.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
