@@ -189,6 +189,68 @@ apairo-rellis export ~/data/rellis_derived 00003 --root /data/rellis --lerobot-r
 The derived dataset inherits RELLIS-3D's **non-commercial, share-alike**
 license.
 
+## RELLIS-3D: robot-centred BEV grids (elevation, semantic, traversability)
+
+RELLIS-3D has no bird's-eye-view labels, yet top-down grids are what planners
+consume. `apairo_huggingface.rellis.bev` builds three grids for **every scan**,
+centred on that scan's pose, as apairo **derived channels** (one
+`FramePreprocessor` with three `output_keys`, materialised by
+`run_preprocess`, recipe-hashed so an unchanged rerun is a no-op):
+
+| channel | per frame | values |
+|---|---|---|
+| `bev_elevation` | `(3, 200, 200)` float16 | min / max / mean height above the ground under the robot (m), NaN unknown |
+| `bev_semantic` | `(200, 200)` uint8 | majority ontology id of the points in the cell (void only if alone), 255 unknown |
+| `bev_trav` | `(200, 200)` uint8 | 1 driven / 0 seen, not driven / 255 unknown |
+
+Design choices (all in `rellis/config.py`, "BEV grids"):
+
+- **Grid**: 0.2 m cells, 40 x 40 m, forward-biased: 30 m ahead, 10 m behind,
+  20 m either side. Gravity-aligned frame: origin at the lidar, +x the robot
+  heading (the Ouster's -x) projected on the ground plane, +y left, z world up.
+  Row 0 is 30 m ahead, column 0 is 20 m left: the robot drives up the image.
+- **Heights** are lidar z + 1.0 m (the measured lidar height), so the ground
+  under the robot reads ~0.
+- **Accumulation, past only**: the grid of scan j uses scans j, j-2, ..., j-18
+  (10 scans, ~2 s, ~2.6 m at the median 1.3 m/s), placed with `poses.txt`.
+  Nothing later than j enters the inputs (a test rewrites the future scans and
+  checks the grid does not move). Moving objects (people walking beside the
+  robot) smear over those 2 s.
+- **Self-returns**: points within 2 m, and a sensor-frame box 0-3 m behind the
+  lidar (robot-attached returns, mostly labelled void, present in most scans)
+  are dropped. The lowest Ouster beam meets the ground ~3.4 m out, so a disc
+  around the robot stays unknown.
+- **Traversability** is a label and may use the future: the robot footprint
+  (0.7 m either side of the path) from 10 m of path behind the scan to 30 m
+  ahead. Driven cells are 1 even where no point fell; seen cells (any point)
+  are 0 otherwise; frames with less than 10 m of path ahead are all 255, as
+  in the image masks.
+- **Clock**: scans have no stamp; the view's `poses` channel (the symlinked
+  `poses.txt`, read by apairo's `csv` format) gets a `timestamps.txt` written
+  once from the camera filenames, and the scans and labels borrow it -- no
+  image is decoded to process a sequence.
+
+`apairo-rellis bev-quality` checks the two independent sources against each
+other: the share of driven cells whose majority class is driveable (dirt,
+grass, asphalt, concrete, puddle, mud), the share that is an obstacle (tree,
+bush, barrier, person, ...), and the driveable share of seen-not-driven cells
+as the base rate.
+
+```bash
+apairo-rellis bev-process --root /data/rellis --out ~/data/rellis_bev      # all 5 sequences
+apairo-rellis bev-render ~/data/rellis_bev/00003 --every 500 --png-dir /tmp/bev
+apairo-rellis bev-quality --out ~/data/rellis_bev
+apairo-rellis bev-export ~/data/rellis_bev --root /data/rellis --lerobot-root ~/data/rellis_bev_lerobot
+apairo-rellis bev-check ~/data/rellis_bev_lerobot
+```
+
+The export is a separate LeRobotDataset (one episode per sequence, one frame
+per scan): the camera image at 480x300 (video), `observation.bev.elevation`
+(float32, NaN unknown -- LeRobot's per-element statistics are NaN for it, so
+mask before normalising), `observation.bev.semantic` and `observation.bev.trav`
+(lossless PNG, the id in every channel), plus the pose, action and frame info
+of the image export. It is written locally only.
+
 ## Install
 
 ```bash

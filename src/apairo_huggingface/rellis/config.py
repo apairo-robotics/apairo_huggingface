@@ -61,3 +61,39 @@ ONTOLOGY = {
     33: ("mud", (99, 66, 34)),
     34: ("rubble", (110, 22, 138)),
 }
+
+# ------------------------------------------------------------------ BEV grids
+# Robot-centred bird's-eye-view grids, one per scan (see :mod:`.bev`). The grid
+# frame is gravity-aligned: origin at the lidar, +x the robot's heading (the
+# Ouster -x) projected on the horizontal plane, +y left, +z world up. Row 0 is
+# the far front (x = BEV_X_MAX), column 0 the far left (y = BEV_Y_MAX), so the
+# grid reads like a map with the robot driving up the page.
+BEV_POSES = "poses"            # poses.txt as a csv channel; it carries the scan clock
+BEV_ELEVATION = "bev_elevation"  # (3, H, W) float16: min / max / mean height, NaN unknown
+BEV_SEMANTIC = "bev_semantic"    # (H, W) uint8: majority ontology id, 255 unknown
+BEV_TRAV = "bev_trav"            # (H, W) uint8: 1 driven / 0 seen, not driven / 255 unknown
+BEV_RESOLUTION = 0.2           # m per cell
+BEV_X_MIN, BEV_X_MAX = -10.0, 30.0   # m, behind / ahead of the lidar (forward-biased)
+BEV_Y_MIN, BEV_Y_MAX = -20.0, 20.0   # m, right / left
+# Heights are stored relative to the ground under the robot: z_lidar + LIDAR_HEIGHT.
+# Accumulation: the current scan plus the BEV_ACCUMULATE - 1 previous scans taken
+# every BEV_STRIDE scans (past only, never future: the grid at scan j uses scans
+# <= j), placed with poses.txt. 10 scans, stride 2 = the last ~2 s, ~2.6 m of
+# motion at the median 1.3 m/s.
+BEV_ACCUMULATE = 10
+BEV_STRIDE = 2
+# Driven corridor: the robot's footprint (ROBOT_HALF_WIDTH either side of the
+# path) along the trajectory from BEV_PATH_BACK metres of path behind the scan to
+# FORWARD_DISTANCE metres ahead. Frames with less than MIN_FUTURE_PATH ahead get
+# an all-255 trav grid, as in the image masks.
+BEV_PATH_BACK = 10.0
+# Self-returns: besides MIN_RANGE, every sequence has robot-attached returns
+# 1.7-2.9 m BEHIND the lidar (Ouster +x), mostly labelled void, at a fixed
+# place in the sensor frame (00003: in 78% of scans, ~1700 points). They are
+# dropped by this sensor-frame box (x along the Ouster, i.e. +x = rearward).
+SELF_BOX_X = (0.0, 3.0)
+SELF_BOX_Y = (-1.2, 1.2)
+SELF_BOX_Z = (-0.75, 1.0)
+# Classes a Warthog drives on (RELLIS ontology), for the trav-vs-semantic check.
+DRIVEABLE = (1, 3, 10, 23, 31, 33)   # dirt, grass, asphalt, concrete, puddle, mud
+OBSTACLE = (4, 5, 8, 9, 12, 15, 17, 18, 19, 27, 34)  # tree pole vehicle object building log person fence bush barrier rubble

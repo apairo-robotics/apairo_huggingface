@@ -40,7 +40,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "apairo_huggingface.fomo" = ["apairo.yaml"]
-"apairo_huggingface.rellis" = ["apairo.yaml"]
+"apairo_huggingface.rellis" = ["apairo.yaml", "apairo_bev.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
