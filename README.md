@@ -234,7 +234,26 @@ Design choices (all in `rellis/config.py`, "BEV grids"):
 other: the share of driven cells whose majority class is driveable (dirt,
 grass, asphalt, concrete, puddle, mud), the share that is an obstacle (tree,
 bush, barrier, person, ...), and the driveable share of seen-not-driven cells
-as the base rate.
+as the base rate. All five sequences (every frame with a trav grid):
+
+| seq | frames | driven cells observed | driven: driveable | driven: obstacle | (of which person) | seen-not-driven: driveable |
+|---|---|---|---|---|---|---|
+| 00000 | 2521 | 0.659 | 0.939 | 0.061 | 0.042 | 0.333 |
+| 00001 | 2037 | 0.674 | 0.966 | 0.028 | 0.022 | 0.296 |
+| 00002 | 4013 | 0.651 | 0.894 | 0.101 | 0.070 | 0.608 |
+| 00003 | 1866 | 0.686 | 0.962 | 0.034 | 0.030 | 0.616 |
+| 00004 | 1870 | 0.672 | 0.941 | 0.054 | 0.053 | 0.616 |
+
+89-97% of the driven cells are driveable, against a 30-62% base rate. Most
+of the obstacle share is `person`: the operators walk along the trail the
+robot later drives (the trav label uses the future path, the semantic grid
+the past scans), plus RELLIS's ghost person labels on empty ground. Without
+person the obstacle share is 0.1-3.1%. A third of the driven cells hold no
+point (the unseen disc around the robot, sparse far ground).
+
+Processing takes 0.12 s per scan (265 s for the 2184 scans of 00003, ~16 min
+for all 13556 with two sequences in parallel, 0.55 GB peak RSS); the five
+sequences hold 4.1 GB of grids (npy: 230 KB elevation + 2 x 40 KB per scan).
 
 ```bash
 apairo-rellis bev-process --root /data/rellis --out ~/data/rellis_bev      # all 5 sequences
