@@ -121,12 +121,54 @@ tests/
   test_eval.py      ground-truth projection + eval dataset round-trip
 ```
 
+## FoMo: seasonal traversability (in progress)
+
+[FoMo](https://fomo.norlab.ulaval.ca) (Forêt Montmorency, CC BY 4.0) recorded the
+same forest trails twelve times between November 2024 and November 2025, snow
+included, and serves them from a public S3 bucket. `apairo_huggingface.fomo` turns it into a
+LeRobotDataset with self-supervised traversability masks:
+
+- `fomo_bin`, an apairo **format plugin** for FoMo's packed 26-byte lidar records;
+- a declaration (`fomo/apairo.yaml`) reading the tree as published -- RoboSense
+  scans, Basler images and the ~50 Hz twist commands, each on its own clock;
+- KISS-ICP odometry, scored against FoMo's GNSS-PPK `gt.txt` (ATE);
+- masks computed **at the camera instant**: `synchronize()` picks the nearest
+  scan and interpolates the pose at the image timestamp, and the scan is moved
+  by the motion between the two before projection;
+- the export: image (video), mask (lossless PNG), pose in `base_link`, command
+  as `action`, snow depth and air temperature per episode.
+
+`fomo/calibration.py` documents two traps in the shipped calibration (the
+Basler intrinsics and the frame of the lidar-camera extrinsic), both checked by
+projecting scans onto images.
+
+```bash
+apairo-fomo list --color red                       # 12 trajectories, 12-32 GB each
+apairo-fomo run --root ~/data/fomo --color red --drop-lidar
+apairo-fomo export ~/data/fomo --out ~/data/fomo_lerobot             # local build
+apairo-fomo export ~/data/fomo --out ~/data/fomo_lerobot --push      # to the Hub
+```
+
+`run` downloads, then processes, one trajectory at a time and skips those with
+an `apairo_fomo_report.json`, so it resumes after an interruption.
+`--drop-lidar` deletes the scans once labelled (the export does not need them).
+On a 22-core laptop, one trajectory takes ~8 min of odometry, 2 min of scan
+labels and 5 min of masks, plus the download.
+
 ## Install
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ../apairo -e ../apairo_preprocess   # sibling repos, editable
 pip install -e ".[test]"                           # this package + lerobot>=0.4.0
+```
+
+With `uv`, `apairo_preprocess` pins `apairo-transform` to its git URL, which
+conflicts with an editable sibling; override it:
+
+```bash
+printf "apairo-transform @ file://$PWD/../apairo_transform\napairo @ file://$PWD/../apairo\n" > /tmp/overrides.txt
+uv pip install --override /tmp/overrides.txt -e ../apairo -e ../apairo_transform -e ../apairo_preprocess -e ".[test]"
 ```
 
 > Note: `apairo_preprocess` and `apairo_transform` install editable from the `../` siblings for now, pending their own PyPI publishing.

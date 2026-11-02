@@ -9,13 +9,15 @@ description = "Label apairo robotics datasets and export them to HuggingFace LeR
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "apairo>=0.6",
+    "apairo>=0.9",
     "apairo_preprocess",
     "apairo_transform",
     "lerobot>=0.4.0",
     "datasets>=4.0",
     "numpy",
     "Pillow",
+    "scipy",
+    "kiss-icp>=1.2",
 ]
 
 [project.optional-dependencies]
@@ -26,12 +28,16 @@ apairo-tartan-label = "apairo_huggingface.cli:label_main"
 apairo-tartan-export = "apairo_huggingface.cli:main"
 apairo-tartan-gt-label = "apairo_huggingface.cli:gt_label_main"
 apairo-tartan-gt-export = "apairo_huggingface.cli:gt_export_main"
+apairo-fomo = "apairo_huggingface.fomo.cli:main"
 
 [project.entry-points."apairo.formats"]
 fomo_bin = "apairo_huggingface.fomo.format:FomoBinFormat"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"apairo_huggingface.fomo" = ["apairo.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
