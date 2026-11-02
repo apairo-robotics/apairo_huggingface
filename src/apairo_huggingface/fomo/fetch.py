@@ -7,11 +7,30 @@ skipped, so an interrupted download resumes.
 import concurrent.futures as cf
 import json
 import re
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 BUCKET = "https://fomo-dataset.s3.amazonaws.com"
+RETRIES = 8
+
+
+def get(url: str) -> bytes:
+    """GET ``url``, retrying network errors with exponential backoff.
+
+    Some networks reset a few percent of TLS handshakes; a single reset must
+    not abort a multi-hour run.
+    """
+    for attempt in range(RETRIES):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read()
+        except OSError:  # URLError, ConnectionResetError, timeouts
+            if attempt == RETRIES - 1:
+                raise
+            time.sleep(min(2 ** attempt, 30))
+    raise AssertionError("unreachable")
 
 
 def list_keys(prefix):
@@ -20,7 +39,7 @@ def list_keys(prefix):
         q = {"list-type": "2", "prefix": prefix}
         if token:
             q["continuation-token"] = token
-        xml = urllib.request.urlopen(f"{BUCKET}/?{urllib.parse.urlencode(q)}").read().decode()
+        xml = get(f"{BUCKET}/?{urllib.parse.urlencode(q)}").decode()
         keys += [(k, int(s)) for k, s in re.findall(r"<Key>(.*?)</Key>.*?<Size>(\d+)</Size>", xml)]
         m = re.search(r"<NextContinuationToken>(.*?)</NextContinuationToken>", xml)
         if not m:
@@ -34,17 +53,12 @@ def fetch(key, size, dest_root):
         return 0
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".part")
-    err = "size mismatch"
-    for _ in range(5):
-        try:
-            with urllib.request.urlopen(f"{BUCKET}/{urllib.parse.quote(key)}", timeout=60) as r:
-                tmp.write_bytes(r.read())
-            if tmp.stat().st_size == size:
-                tmp.rename(out)
-                return size
-        except OSError as e:  # retry on network errors
-            err = e
-    raise RuntimeError(f"failed {key}: {err}")
+    for _ in range(3):  # get() already retries network errors; this retries truncation
+        tmp.write_bytes(get(f"{BUCKET}/{urllib.parse.quote(key)}"))
+        if tmp.stat().st_size == size:
+            tmp.rename(out)
+            return size
+    raise RuntimeError(f"failed {key}: size mismatch")
 
 
 SENSORS = ("calib", "metadata", "robosense", "basler")
@@ -52,7 +66,7 @@ SENSORS = ("calib", "metadata", "robosense", "basler")
 
 def catalog() -> dict:
     """``{deployment: {trajectory: {"sensors": {name: bytes}, "metadata": bytes}}}``."""
-    return json.loads(urllib.request.urlopen(f"{BUCKET}/sizes.json").read())
+    return json.loads(get(f"{BUCKET}/sizes.json"))
 
 
 def fetch_trajectory(traj: str, dest_root, subdirs=SENSORS, workers: int = 24) -> Path:
