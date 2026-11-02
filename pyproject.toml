@@ -27,6 +27,9 @@ apairo-tartan-export = "apairo_huggingface.cli:main"
 apairo-tartan-gt-label = "apairo_huggingface.cli:gt_label_main"
 apairo-tartan-gt-export = "apairo_huggingface.cli:gt_export_main"
 
+[project.entry-points."apairo.formats"]
+fomo_bin = "apairo_huggingface.fomo.format:FomoBinFormat"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
