@@ -116,7 +116,7 @@ def _synthetic_root(tmp_path):
     for k in range(N_SCANS):
         R = _rot_z(-90.0)                       # lidar -x -> world +y
         rows.append(np.hstack([R, [[0.0], [2.0 * k], [1.0]]]).ravel())
-        Image.fromarray(np.zeros((4, 4, 3), np.uint8)).save(
+        Image.fromarray(np.full((160, 256, 3), 30 * k, np.uint8)).save(
             seq / config.CAMERA / f"frame{k:06d}-1581624000_{100 * k:03d}.jpg")
         _ground_scan(rng).tofile(seq / "os1_cloud_node_kitti_bin" / f"{k:06d}.bin")
         np.full(4000, 3, dtype="<u4").tofile(seq / "os1_cloud_node_semantickitti_label_id" / f"{k:06d}.label")
@@ -184,6 +184,33 @@ def test_accumulation_is_past_only(tmp_path):
     shifted.tofile(seq / "os1_cloud_node_kitti_bin" / f"{j - 1:06d}.bin")
     moved = grids()
     assert not np.array_equal(np.nan_to_num(before[config.BEV_ELEVATION]), np.nan_to_num(moved[config.BEV_ELEVATION]))
+
+
+def test_export_reloads_the_grids_unchanged(tmp_path, monkeypatch):
+    from apairo_huggingface.rellis.bev_export import check, to_lerobot
+
+    monkeypatch.setattr(config, "MIN_FUTURE_PATH", 4.0)
+    root, _ = _synthetic_root(tmp_path)
+    for name, sid in (("train", 0), ("val", 1), ("test", 2)):
+        (root / f"pt_{name}.lst").write_text("".join(
+            f"00000/os1_cloud_node_kitti_bin/{k:06d}.bin x\n" for k in range(N_SCANS) if k % 3 == sid))
+    bev.process_sequence(root, "00000", tmp_path / "out")
+    to_lerobot(root, [tmp_path / "out" / "00000"], "test/rellis_bev", lerobot_root=tmp_path / "lr")
+    report = check("test/rellis_bev", tmp_path / "lr")
+    assert report["episodes"] == 1 and report["frames"] == N_SCANS
+    assert report["values"]["observation.bev.trav"] == [0, 1, 255]
+    assert report["values"]["observation.bev.semantic"] == [3, 255]
+    assert report["split_counts"] == {"train": 3, "val": 3, "test": 2}
+    assert report["item_mid_shapes"]["observation.bev.elevation"] == (3, H, W)
+
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    item = LeRobotDataset("test/rellis_bev", root=tmp_path / "lr")[2]
+    ds = bev.open_view(tmp_path / "out" / "00000", bev.OUTPUT_KEYS)
+    np.testing.assert_array_equal(item["observation.bev.elevation"].numpy(),
+                                  ds.loaders[config.BEV_ELEVATION][2].astype(np.float32))
+    np.testing.assert_array_equal(np.round(item["observation.bev.trav"][0].numpy() * 255).astype(np.uint8),
+                                  ds.loaders[config.BEV_TRAV][2])
 
 
 # --------------------------------------------------- real data, if present

@@ -268,7 +268,11 @@ per scan): the camera image at 480x300 (video), `observation.bev.elevation`
 (float32, NaN unknown -- LeRobot's per-element statistics are NaN for it, so
 mask before normalising), `observation.bev.semantic` and `observation.bev.trav`
 (lossless PNG, the id in every channel), plus the pose, action and frame info
-of the image export. It is written locally only.
+of the image export. It is written locally only: 13556 frames, 5 episodes,
+2.1 GB (2.0 GB parquet, 126 MB video), 14 min, but 18 GB peak RSS (LeRobot
+holds an episode's float arrays in memory; 00002 has 4147 frames).
+Elevation is relative to the ground under the robot, not terrain-normalised:
+on a climb the ground ahead reads up to +1.3 m.
 
 ## Install
 
