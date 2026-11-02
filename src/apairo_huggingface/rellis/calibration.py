@@ -2,7 +2,7 @@
 
 Established by projecting labelled scans onto images of all five sequences and
 scoring the label agreement with the official 2D annotations
-(``apairo-rellis calib-check``):
+(``apairo-rellis calib-check``, :mod:`.calibcheck`):
 
 - **Extrinsic.** ``Rellis_3D/<seq>/transforms.yaml`` (key
   ``os1_cloud_node-pylon_camera_node``) holds a quaternion ``q`` and a

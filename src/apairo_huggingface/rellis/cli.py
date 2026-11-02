@@ -1,5 +1,6 @@
 """``apairo-rellis``: RELLIS-3D -> projected label + traversability masks -> LeRobotDataset.
 
+    apairo-rellis calib-check --root /data/rellis --png-dir /tmp/calib              # verify the calibration first
     apairo-rellis process --root /data/rellis --out ~/data/rellis_derived            # every sequence
     apairo-rellis process --root /data/rellis --out ~/data/rellis_derived 00003      # one sequence
     apairo-rellis agreement --root /data/rellis --out ~/data/rellis_derived          # vs official 2D labels
@@ -31,6 +32,16 @@ def cmd_process(args) -> None:
         report = label_sequence(args.root, seq, out, overwrite=args.overwrite, limit=args.limit)
         if report:
             (out / seq / "apairo_rellis_report.json").write_text(json.dumps(report, indent=2))
+
+
+def cmd_calib_check(args) -> None:
+    from .calibcheck import calibration_check
+
+    report = calibration_check(args.root, args.sequences or config.SEQUENCES,
+                               frames_per_seq=args.frames, png_dir=args.png_dir)
+    for seq, scores in report.items():
+        for name, value in scores.items():
+            print(f"{seq}  {name}: {value if isinstance(value, dict) else round(value, 4)}")
 
 
 def cmd_agreement(args) -> None:
@@ -82,6 +93,13 @@ def main(argv=None) -> None:
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--limit", type=int, help="first N images only (smoke test)")
     p.set_defaults(func=cmd_process)
+
+    p = sub.add_parser("calib-check", help="score calibration chains against the 2D labels, write overlays")
+    p.add_argument("sequences", nargs="*")
+    p.add_argument("--root", required=True)
+    p.add_argument("--frames", type=int, default=8, help="annotated frames per sequence")
+    p.add_argument("--png-dir", help="write point overlays here")
+    p.set_defaults(func=cmd_calib_check)
 
     p = sub.add_parser("agreement", help="IoU / agreement vs the official 2D annotations")
     p.add_argument("sequences", nargs="*")
