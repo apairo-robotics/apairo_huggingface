@@ -10,6 +10,11 @@ projection has data** (``sem_mask != 255``) and where neither side is ``void``
 - ``precision``  |P=c and G=c| / |P=c|
 
 Counts are accumulated over all pixels of all images (not averaged per image).
+Summaries: ``pixel_accuracy``; ``miou`` over every class the 2D labels contain;
+``miou_no_sky``, the same without ``sky``, which the lidar cannot return from
+(its IoU is 0 by construction: a sky pixel with data is an edge or a residual
+misalignment); ``fwiou``, IoU weighted by the 2D pixel share. ``confused_with``
+lists, per 2D class, the projected labels its pixels receive most often.
 Results are given for every annotated image and per official image split
 (``Rellis_3D_image_split/{train,val,test}.lst``).
 """
@@ -44,7 +49,8 @@ def sequence_confusion(view, splits: dict[str, str]) -> dict[str, np.ndarray]:
     view = Path(view)
     seq = view.name
     cm = {s: np.zeros((256, 256), dtype=np.int64) for s in ("all", *SPLITS, "unsplit")}
-    for ref_path in sorted((view / config.LABEL_2D).iterdir()):
+    # *.png only: 00000 also holds a stray frame001493-1581624802_049.jpg there.
+    for ref_path in sorted((view / config.LABEL_2D).glob("*.png")):
         stem = ref_path.stem
         sem_path = view / config.SEM_MASK / f"{stem}.png"
         if not sem_path.exists():
@@ -73,13 +79,20 @@ def scores(cm: np.ndarray) -> dict:
             "precision": tp[cid] / pred[cid] if pred[cid] else float("nan"),
             "pixels_2d": int(gt[cid]),
             "pixels_projected": int(pred[cid]),
+            "confused_with": {
+                config.ONTOLOGY.get(int(p), (str(p),))[0]: round(float(cm[p, cid] / gt[cid]), 3)
+                for p in np.argsort(-cm[:, cid])[:3] if gt[cid] and cm[p, cid]
+            },
         }
     total = cm.sum()
-    ious = [v["iou"] for v in per_class.values() if v["pixels_2d"] > 0]
+    present = {k: v for k, v in per_class.items() if v["pixels_2d"] > 0}
+    gt_total = sum(v["pixels_2d"] for v in present.values())
     return {
         "pixels": int(total),
         "pixel_accuracy": float(tp.sum() / total) if total else float("nan"),
-        "miou": float(np.mean(ious)) if ious else float("nan"),
+        "miou": float(np.mean([v["iou"] for v in present.values()])) if present else float("nan"),
+        "miou_no_sky": float(np.mean([v["iou"] for k, v in present.items() if k != "sky"])) if present else float("nan"),
+        "fwiou": float(sum(v["iou"] * v["pixels_2d"] for v in present.values()) / gt_total) if gt_total else float("nan"),
         "per_class": per_class,
     }
 
@@ -104,9 +117,11 @@ def agreement(root, views, out_json=None) -> dict:
 
 def table(report: dict, split: str = "all") -> str:
     r = report["overall"][split]
-    lines = [f"split={split}  pixels={r['pixels']}  pixel_accuracy={r['pixel_accuracy']:.3f}  mIoU={r['miou']:.3f}",
-             f"{'class':10s} {'IoU':>6s} {'agree':>6s} {'prec':>6s} {'px_2d':>11s} {'px_proj':>11s}"]
+    lines = [f"split={split}  pixels={r['pixels']}  pixel_accuracy={r['pixel_accuracy']:.3f}  "
+             f"mIoU={r['miou']:.3f}  mIoU_no_sky={r['miou_no_sky']:.3f}  fwIoU={r['fwiou']:.3f}",
+             f"{'class':10s} {'IoU':>6s} {'agree':>6s} {'prec':>6s} {'px_2d':>11s} {'px_proj':>11s}  2D pixels get"]
     for name, v in sorted(r["per_class"].items(), key=lambda kv: -kv[1]["pixels_2d"]):
         lines.append(f"{name:10s} {v['iou']:6.3f} {v['agreement']:6.3f} {v['precision']:6.3f} "
-                     f"{v['pixels_2d']:11d} {v['pixels_projected']:11d}")
+                     f"{v['pixels_2d']:11d} {v['pixels_projected']:11d}  "
+                     + " ".join(f"{k}:{x:.2f}" for k, x in v["confused_with"].items()))
     return "\n".join(lines)

@@ -54,7 +54,8 @@ def cmd_agreement(args) -> None:
         if split in report["overall"]:
             print(table(report, split), end="\n\n")
     for seq, r in report["per_sequence"].items():
-        print(f"{seq}: pixels={r['pixels']} pixel_accuracy={r['pixel_accuracy']:.3f} mIoU={r['miou']:.3f}")
+        print(f"{seq}: pixels={r['pixels']} pixel_accuracy={r['pixel_accuracy']:.3f} "
+              f"mIoU={r['miou']:.3f} mIoU_no_sky={r['miou_no_sky']:.3f} fwIoU={r['fwiou']:.3f}")
 
 
 def cmd_overlay(args) -> None:
