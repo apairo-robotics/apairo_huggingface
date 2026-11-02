@@ -18,6 +18,7 @@ dependencies = [
     "Pillow",
     "scipy",
     "kiss-icp>=1.2",
+    "rosbags>=0.11",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,7 @@ apairo-tartan-gt-label = "apairo_huggingface.cli:gt_label_main"
 apairo-tartan-gt-export = "apairo_huggingface.cli:gt_export_main"
 apairo-fomo = "apairo_huggingface.fomo.cli:main"
 apairo-rellis = "apairo_huggingface.rellis.cli:main"
+apairo-sim-amiad = "apairo_huggingface.sim_amiad.cli:main"
 
 [project.entry-points."apairo.formats"]
 fomo_bin = "apairo_huggingface.fomo.format:FomoBinFormat"
