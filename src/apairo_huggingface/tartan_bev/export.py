@@ -24,8 +24,8 @@ the pose are read at the scan itself:
   and yaw rate (rad/s), from the GICP poses of this scan and the next one --
   the action of the RELLIS BEV export;
 - ``observation.command``        ``(2,)`` float32: the raw ``cmd`` channel,
-  ``[linear, angular]``, kept for provenance (its linear part is 0 throughout
-  the recordings we checked, the angular part is the steering command in [-1, 1]);
+  ``[linear, angular]``, kept for provenance (its linear part is 0 in most
+  recordings, the angular part is the steering command in [-1, 1]);
 - ``observation.frame_info``     ``(3,)`` int64: ``[recording_index, scan_index,
   camera_index]``, the recording (its position in ``meta/apairo_recordings.json``),
   the scan and the matched image in it.

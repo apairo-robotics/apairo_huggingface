@@ -107,6 +107,8 @@ src/apairo_huggingface/
   eval_labeling.py  ground_truth (toaster) -> trav_mask_gt, projected the same way as trav_mask
   eval_export.py    trav_mask_gt + raw points -> a plain HF dataset (not LeRobot; see docs/)
   cli.py         apairo-tartan-label · apairo-tartan-export · apairo-tartan-gt-label · apairo-tartan-gt-export
+  bev_grid.py    the robot-centred BEV grid shared by rellis/bev.py and tartan_bev/bev.py
+  tartan_bev/    TartanDrive BEV grids (bev, quality, render, export, cli: apairo-tartan-bev)
 examples/
   export_tartan_to_lerobot.py   thin, linear entry point
   load_tartan_views.py          the same raw data as lidar / IMU / windowed / DataLoader views
@@ -273,6 +275,65 @@ of the image export. It is written locally only: 13556 frames, 5 episodes,
 holds an episode's float arrays in memory; 00002 has 4147 frames).
 Elevation is relative to the ground under the robot, not terrain-normalised:
 on a climb the ground ahead reads up to +1.3 m.
+
+## TartanDrive 2.0: the same BEV recipe on another dataset
+
+`apairo_huggingface.tartan_bev` runs the RELLIS BEV recipe on TartanDrive
+2.0, to show an apairo recipe is portable across datasets. The grid, its
+frame, the binning, the elevation layer, the past-only accumulation and the
+driven corridor live in one shared module, `apairo_huggingface/bev_grid.py`,
+used unchanged by `rellis/bev.py` and `tartan_bev/bev.py` (the RELLIS grids
+are bit-identical before and after the factoring). What the port changes:
+
+- the **declaration** (`tartan_bev/apairo_bev.yaml`): four raw channels of a
+  recording (`velodyne_0`, `gicp_poses` declared on the lidar clock,
+  `image_left_color`, `cmd`), read through a symlink view;
+- the **rig numbers**: heading = vehicle +x, lidar 1.77 m above the ground,
+  footprint +-0.8 m, a 2 m radius for the self-returns;
+- the **semantic layer**, which TartanDrive cannot have (no point labels), is
+  replaced by `bev_geometry` `(2, H, W)` float16: `roughness` (std of the
+  point heights in the cell) and `step` (largest mean-height jump to a known
+  8-neighbour), both from the inputs only;
+- the **quality check** becomes geometric: the flat share (roughness < 0.10 m
+  and step < 0.20 m) of driven cells against that of seen-not-driven cells.
+
+Processed: 13 of the 55 recordings with scans (`tartan_bev/config.SEQUENCES`:
+every site, both seasons), 27,561 scans, 10.7 km of path. Over the 26,038
+frames with a trav grid, cells are 3.9% driven / 38.8% seen / 57.3% unknown;
+48% of driven cells hold a point. **80% of the observed driven cells are flat
+against 35% of the seen-not-driven cells** (2.3x; 1.4-4.1x per recording;
+lowest on the vegetated meadows / figure_8 / slag heap recordings, where the
+Viking drives through brush that reads rough). Full table in the card.
+
+Processing: 0.04 s per scan alone, ~0.1 s with three recordings in parallel
+on the shared HDD (~15 min for the 13), 185 MB peak RSS per process; 12 GB of
+grids (npy: 240 KB elevation + 160 KB geometry + 40 KB trav per scan). The
+full release (~125.7k scans) would take ~55 GB of grids.
+
+The source repeats some scans under the same stamp (413 of the 27,561:
+identical points, pose re-registered within mm); `BevGrids` tells them apart
+by their pose, the export keeps the first. The `cmd` channel's linear part is
+0 in 10 of the 13 recordings (set only in sam_loop), and that `cmd` is the
+action of the published tartandrive_offroad, so the BEV export's `action` is the executed speed and yaw rate from the poses, as
+in the RELLIS BEV export, with `cmd` kept as `observation.command`.
+
+Export (`apairo-tartan-bev export`, then `check`): 34 episodes / 27,148
+frames (the 413 repeats dropped, nothing dropped by the 0.1 s camera / cmd
+tolerance), recordings cut into equal episodes of at most 1000 frames because
+LeRobot holds an episode's float grids in memory: 8.7 GB peak RSS, 31 min,
+5.8 GB (5.3 GB parquet, 505 MB video); the full release would add ~26 GB.
+Reload check: trav values {0, 1, 255}, elevation known share 0.40, forward
+speed p50 3.75 m/s.
+
+```bash
+apairo-tartan-bev process --root /mnt/vault-fellowship/tartan --out ~/data/tartan_bev   # config.SEQUENCES
+apairo-tartan-bev render ~/data/tartan_bev/turnpike_2023-09-12-12-39-19 --every 500 --png-dir /tmp/tbev
+apairo-tartan-bev quality --out ~/data/tartan_bev
+apairo-tartan-bev export ~/data/tartan_bev --lerobot-root ~/data/tartan_bev_lerobot
+apairo-tartan-bev check ~/data/tartan_bev_lerobot
+```
+
+Dataset card: [`hub/tartan_bev_dataset_card.md`](hub/tartan_bev_dataset_card.md).
 
 ## Install
 
