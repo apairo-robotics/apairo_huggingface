@@ -210,9 +210,21 @@ lab's, nothing is pushed to the Hub.
   that is truly traversable, per range band, plus a point-by-point check of
   the label transfer against the sim's semantic cloud;
 - the export: image (video), semantic and traversability masks (PNG), pose,
-  `/cmd_vel` as `action`, 15 Hz.
+  `/cmd_vel` as `action`, every 4th scan; the fps is measured from the scan
+  stamps (15 on this bag, whose scans are exactly 1/60 s apart) and an
+  irregular sequence is refused. Images are matched to a scan within the same
+  5 ms tolerance (`config.SYNC_TOLERANCE`) as the labelling.
 
-`sim_amiad/config.py` documents the frame trap: the camera headers say `ZED2`,
+Label transfer vs the sim's own semantic cloud (2247 clouds of the full bag,
+every cloud point matched to a lidar point within 1 cm): **97.78 %** agreement
+on the 5,353,101 points both sides give a real class. Counting `unlabeled`
+(0) as a class gives 97.20 % on 5,385,122 points: the 32,021 extra points are
+all points we label (30,488 tree, 1,533 vegetation) that the sim cloud calls
+unlabeled; we never label a matched point 0. The 30 s segment
+`seg_t035_t065`: 97.71 % (97.20 % with 0). `agreement.json` holds both.
+
+`extract` needs the optional `[sim]` extra (`pip install -e ".[sim]"`, for
+`rosbags`); the other commands do not. `sim_amiad/config.py` documents the frame trap: the camera headers say `ZED2`,
 which is not an optical frame; the pinhole frame is its child `ZED2_pcl`.
 
 ```bash
@@ -230,6 +242,7 @@ apairo-sim-amiad check ~/data/sim_amiad/lerobot
 python -m venv .venv && source .venv/bin/activate
 pip install -e ../apairo -e ../apairo_preprocess   # sibling repos, editable
 pip install -e ".[test]"                           # this package + lerobot>=0.4.0
+pip install -e ".[sim]"                            # + rosbags, for apairo-sim-amiad extract
 ```
 
 With `uv`, `apairo_preprocess` pins `apairo-transform` to its git URL, which

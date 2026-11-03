@@ -45,8 +45,9 @@ def cmd_agreement(args) -> None:
     report = agreement(seq_dir, out_json=seq_dir / "agreement.json")
     print(table(report))
     s = report["sim_cloud"]
-    print(f"\nlabel transfer vs the sim's semantic cloud: {s['both_labeled']} points labelled by both, "
-          f"agreement {s['agreement_both_labeled']:.4f}")
+    print(f"\nlabel transfer vs the sim's semantic cloud: {s['both_labeled']} points with a class on both "
+          f"sides, agreement {s['agreement']:.4f} (with unlabeled as a class: {s['both_labeled_incl_unlabeled']} "
+          f"points, {s['agreement_incl_unlabeled']:.4f})")
 
 
 def cmd_overlay(args) -> None:

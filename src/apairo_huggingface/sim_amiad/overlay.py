@@ -48,7 +48,7 @@ def overlay(seq_dir, k: int, out_png, scale: int = 2) -> Path:
     lidar_ts = np.loadtxt(seq_dir / config.LIDAR / "timestamps.txt", ndmin=1)
     cam_ts = np.loadtxt(seq_dir / config.RGB / "timestamps.txt", ndmin=1)
     c = int(np.argmin(np.abs(cam_ts - lidar_ts[k])))
-    if abs(cam_ts[c] - lidar_ts[k]) > 1e-3:
+    if abs(cam_ts[c] - lidar_ts[k]) > config.SYNC_TOLERANCE:
         raise ValueError(f"scan {k}: no image on its stamp")
     cal = RawDataset(seq_dir, keys=[config.LIDAR]).calibration
     proj = LidarCameraProjection(intrinsics=cal.get_intrinsics(config.CAMERA_FRAME),

@@ -6,7 +6,7 @@ Per extracted sequence, three derived channels are written beside the raw ones
 - ``point_sem``  (N,) uint8: training class id of each point, read from the
   perfect segmentation image of the same stamp. A point gets a label only if
   it is VISIBLE: it projects into the image (``LidarCameraProjection``,
-  ``T_ZED2_pcl<-sensor`` and the camera_info K) and its camera depth agrees
+  ``T_ZED2_pcl<-sensor`` and the camera_info K and D) and its camera depth agrees
   with the sim depth image at that pixel within ``DEPTH_TOLERANCE``. Points
   outside the image, or hidden behind something the camera sees, get 255.
 - ``trav_traj``  (N,) uint8: 1 if the point lies in the robot's future
@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw
 from apairo import RawDataset
 from apairo.core.sample import Sample
 from apairo_preprocess import ImageMaskFromPointLabels, LidarCameraProjection, TraversabilityFromTrajectory
+from apairo_preprocess.projection.lidar_to_camera import _distort_plumb_bob
 
 from . import config
 from .extract import pose7_to_matrix
@@ -47,7 +48,6 @@ TRAV_MASK = "trav_mask"
 # Visibility test against the depth image: |z_point - z_image| <= tol.
 DEPTH_TOLERANCE = 0.15         # m, plus DEPTH_TOLERANCE_REL * z
 DEPTH_TOLERANCE_REL = 0.02
-SYNC_TOLERANCE = 0.005         # s; every sensor is stamped on the same 60 Hz sim tick
 
 # Barakuda: wheel contacts at x +-0.525, y +-0.4775 in base_link; tyres add
 # about 0.2 m around them.
@@ -138,18 +138,37 @@ def corridor_world(future_poses: np.ndarray, step: float = 0.25):
     return np.column_stack([x + hw * lx, y + hw * ly, z]), np.column_stack([x - hw * lx, y - hw * ly, z])
 
 
-def corridor_mask(left_w, right_w, cam_from_world, K, depth_mm, margin: float = 0.5) -> np.ndarray:
+def camera_project(points_cam: np.ndarray, cam) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Camera optical-frame points -> continuous ``u, v`` and depth ``z``, NOT
+    clipped to the image (a corridor quad may straddle its border).
+
+    The same camera model as ``LidarCameraProjection`` (K with skew, plumb-bob
+    distortion of ``cam``), so the corridor and the lidar points land on the
+    same pixels. ``u, v`` are meaningless where ``z <= 0``.
+    """
+    if cam.model != "plumb_bob" and len(cam.distortion):
+        raise ValueError(f"only the plumb_bob distortion model is supported, got {cam.model!r}")
+    K = np.asarray(cam.K, dtype=np.float64)
+    z = points_cam[:, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x, y = points_cam[:, 0] / z, points_cam[:, 1] / z
+    if len(cam.distortion):
+        d = np.asarray(cam.distortion, dtype=np.float64).ravel()
+        x, y = _distort_plumb_bob(x, y, np.append(d, 0.0) if d.size == 4 else d)
+    return K[0, 0] * x + K[0, 1] * y + K[0, 2], K[1, 1] * y + K[1, 2], z
+
+
+def corridor_mask(left_w, right_w, cam_from_world, cam, depth_mm, margin: float = 0.5) -> np.ndarray:
     """(H, W) bool: corridor quads, each drawn only where the depth image does
-    not show something nearer (by ``margin``) at the quad's corners."""
+    not show something nearer (by ``margin``) at the quad's corners. ``cam`` is
+    the ``CameraIntrinsics`` the lidar projection uses (see ``camera_project``)."""
     H, W = depth_mm.shape
     mask = Image.new("L", (W, H), 0)
     if len(left_w) < 2:
         return np.zeros((H, W), dtype=bool)
 
     def project(p):
-        c = p @ cam_from_world[:3, :3].T + cam_from_world[:3, 3]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return K[0, 0] * c[:, 0] / c[:, 2] + K[0, 2], K[1, 1] * c[:, 1] / c[:, 2] + K[1, 2], c[:, 2]
+        return camera_project(p @ cam_from_world[:3, :3].T + cam_from_world[:3, 3], cam)
 
     ul, vl, zl = project(left_w)
     ur, vr, zr = project(right_w)
@@ -189,11 +208,11 @@ def label_sequence(seq_dir, *, overwrite: bool = False, limit: int | None = None
     keys = [config.LIDAR, config.SEMANTIC, config.DEPTH, config.POSE]
     ds = open_sequence(seq_dir, keys)
     sync = ds.synchronize(reference=config.LIDAR,
-                          method={k: "nearest" for k in keys[1:]}, tolerance=SYNC_TOLERANCE)
+                          method={k: "nearest" for k in keys[1:]}, tolerance=config.SYNC_TOLERANCE)
     for k in keys[1:]:
         off = np.abs(sync.time_offsets(k))
-        if off.max() > SYNC_TOLERANCE:
-            raise ValueError(f"{k}: a scan has no {k} within {SYNC_TOLERANCE} s (max {off.max():.4f})")
+        if off.max() > config.SYNC_TOLERANCE:
+            raise ValueError(f"{k}: a scan has no {k} within {config.SYNC_TOLERANCE} s (max {off.max():.4f})")
     n = len(sync) if limit is None else min(limit, len(sync))
     # Derived files are named by the RAW lidar index, so point_sem/000123.npy
     # is row-aligned with lidar/000123.npy even when sync drops edge scans.
@@ -202,7 +221,6 @@ def label_sequence(seq_dir, *, overwrite: bool = False, limit: int | None = None
 
     cal = ds.calibration
     cam = cal.get_intrinsics(config.CAMERA_FRAME)
-    K = cam.K
     cam_from_lidar = cal.get_tf(config.LIDAR_FRAME, config.CAMERA_FRAME)
     base_from_lidar = cal.get_tf(config.LIDAR_FRAME, config.BASE_FRAME)
     cam_from_base = cal.get_tf(config.BASE_FRAME, config.CAMERA_FRAME)
@@ -263,7 +281,7 @@ def label_sequence(seq_dir, *, overwrite: bool = False, limit: int | None = None
             tm = trav_masker(Sample(data={"trav": trav, "lidar_uv": uv_keep}))
             left, right = corridor_world(poses[k:])
             cam_from_world = cam_from_base @ np.linalg.inv(poses[k])
-            tm[corridor_mask(left, right, cam_from_world, K, depth_mm)] = 1
+            tm[corridor_mask(left, right, cam_from_world, cam, depth_mm)] = 1
         else:
             tm = np.full((H, W), config.NO_DATA, dtype=np.uint8)
 

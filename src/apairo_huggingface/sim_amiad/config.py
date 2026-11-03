@@ -52,6 +52,11 @@ STATIC_EDGES = [
 ]
 STATIC_TOLERANCE = 1e-3        # max |matrix difference| for an edge to count as fixed
 
+# Two stamps belong to the same sim tick when they differ by at most this.
+# Every sensor is stamped on the same 60 Hz tick (16.7 ms apart), so 5 ms is
+# unambiguous. Shared by labelling, the export, agreement and the overlays.
+SYNC_TOLERANCE = 0.005         # s
+
 IMAGE_HEIGHT, IMAGE_WIDTH = 720, 1280
 NO_DATA = 255
 POINTS_SEMANTIC_NO_CAMERA_RGB = (40, 40, 40)  # colour of points the sim cloud leaves unlabeled

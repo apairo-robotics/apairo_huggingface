@@ -107,6 +107,16 @@ def depth_to_mm(depth_m: np.ndarray) -> tuple[np.ndarray, int]:
     return np.where((mm > 0) & ~out_of_range, mm, 0).astype(np.uint16), int(out_of_range.sum())
 
 
+def _any_reader():
+    """``rosbags.highlevel.AnyReader``; rosbags is the optional ``[sim]`` extra."""
+    try:
+        from rosbags.highlevel import AnyReader
+    except ImportError as err:
+        raise ImportError("reading the Isaac Sim mcap needs rosbags, an optional extra: "
+                          "pip install 'apairo-huggingface[sim]'") from err
+    return AnyReader
+
+
 def check_classes_json(path) -> None:
     data = json.loads(Path(path).read_text())
     if data["name_to_id"] != config.NAME_TO_ID:
@@ -120,7 +130,7 @@ def check_classes_json(path) -> None:
 def extract(bag, out_dir, *, t_start: float | None = None, t_stop: float | None = None,
             classes_json=config.CLASSES_JSON, workers: int = 8) -> dict:
     """Extract ``[t_start, t_stop)`` (sim seconds, header clock) of ``bag`` into ``out_dir``."""
-    from rosbags.highlevel import AnyReader
+    AnyReader = _any_reader()
 
     t0 = time.time()
     check_classes_json(classes_json)

@@ -1,7 +1,10 @@
 """Labelled sim sequences -> one LeRobotDataset, one episode per sequence.
 
-The sensors tick at 60 Hz of sim time; every ``STRIDE``-th labelled scan
-becomes a LeRobot frame (15 Hz). Per frame:
+Every ``STRIDE``-th labelled scan becomes a LeRobot frame. The dataset fps is
+measured from the scan stamps (``export_fps``): the amiad bag ticks at 60 Hz
+of sim time, hence 15 fps, and an export whose frame intervals are not
+regular refuses to run. Images are matched to a scan within
+``config.SYNC_TOLERANCE``, like the labelling. Per frame:
 
 - ``observation.images.front``          the RGB image (video), downscaled by 2;
 - ``observation.semantic_mask``         the perfect sim segmentation, training
@@ -27,8 +30,7 @@ from . import config
 from .extract import pose7_to_matrix
 from .labeling import TRAV_MASK
 
-FPS = 15
-STRIDE = 4                    # 60 Hz sim ticks -> 15 Hz
+STRIDE = 4                    # 60 Hz sim ticks -> 15 fps on the amiad bag
 ROBOT_TYPE = "barakuda_isaac_sim"
 TASK = "drive the robot along the off-road trail"
 DOWNSCALE = 2                 # 1280x720 -> 640x360
@@ -37,10 +39,40 @@ ACTION_NAMES = ["linear_x", "angular_z"]
 FRAME_INFO_NAMES = ["scan_index", "scored", "sim_time_ms"]
 
 
-def _stamp_index(seq_dir: Path, name: str) -> dict[int, int]:
-    """Stamp (integer microseconds) -> file index of an image channel."""
-    ts = np.loadtxt(seq_dir / name / "timestamps.txt", ndmin=1)
-    return {int(round(t * 1e6)): i for i, t in enumerate(ts)}
+def export_fps(label_ts: np.ndarray, stride: int = STRIDE) -> int:
+    """Integer fps of the exported frames (every ``stride``-th stamp), measured.
+
+    Raises if any interval between two exported frames is off the median by
+    more than ``config.SYNC_TOLERANCE`` (a dropped or irregular scan), or if
+    the rate is not a whole number of frames per second (LeRobot's fps is an
+    int, and a rounded one would put every timestamp off its frame).
+    """
+    picked = np.asarray(label_ts, dtype=np.float64)[::stride]
+    if len(picked) < 2:
+        raise ValueError(f"{len(picked)} exported frame(s): no interval to measure the fps from")
+    dt = np.diff(picked)
+    period = float(np.median(dt))
+    worst = float(np.abs(dt - period).max())
+    if period <= 0 or worst > config.SYNC_TOLERANCE:
+        bad = int(np.argmax(np.abs(dt - period)))
+        raise ValueError(f"irregular frames: interval {dt[bad]:.6f} s after stamp {picked[bad]:.6f} "
+                         f"vs median {period:.6f} s (tolerance {config.SYNC_TOLERANCE} s)")
+    fps = 1.0 / period
+    if abs(fps - round(fps)) > 1e-3 * fps:
+        raise ValueError(f"measured {fps:.4f} fps is not a whole number")
+    return int(round(fps))
+
+
+def sequence_fps(seq_dir) -> int:
+    return export_fps(np.loadtxt(Path(seq_dir) / TRAV_MASK / "timestamps.txt", ndmin=1))
+
+
+def nearest_within(ts: np.ndarray, t: float, what: str) -> int:
+    """Index of the stamp of ``ts`` nearest ``t``; raises past ``config.SYNC_TOLERANCE``."""
+    j = int(np.argmin(np.abs(ts - t)))
+    if abs(ts[j] - t) > config.SYNC_TOLERANCE:
+        raise ValueError(f"no {what} within {config.SYNC_TOLERANCE} s of {t:.6f} (nearest {ts[j]:.6f})")
+    return j
 
 
 def _mask3(mask: np.ndarray, size) -> np.ndarray:
@@ -55,8 +87,8 @@ def frames(seq_dir, limit: int | None = None):
     label_ts = np.loadtxt(seq_dir / TRAV_MASK / "timestamps.txt", ndmin=1)
     if len(label_files) != len(label_ts):
         raise ValueError(f"{seq_dir}: {len(label_files)} trav masks for {len(label_ts)} stamps")
-    rgb_of = _stamp_index(seq_dir, config.RGB)
-    sem_of = _stamp_index(seq_dir, config.SEMANTIC)
+    rgb_ts = np.loadtxt(seq_dir / config.RGB / "timestamps.txt", ndmin=1)
+    sem_ts = np.loadtxt(seq_dir / config.SEMANTIC / "timestamps.txt", ndmin=1)
     scored = set(np.load(seq_dir / "scored_frames.npy").tolist())
 
     pose_ts = np.loadtxt(seq_dir / config.POSE / "timestamps.txt", ndmin=1)
@@ -71,14 +103,14 @@ def frames(seq_dir, limit: int | None = None):
     origin = None
     for i in picks:
         t = float(label_ts[i])
-        key = int(round(t * 1e6))
-        if key not in rgb_of or key not in sem_of:
-            raise ValueError(f"{seq_dir}: no image on the stamp of scan {label_files[i].stem}")
-        rgb = Image.open(seq_dir / config.RGB / f"{rgb_of[key]:06d}.png").convert("RGB")
+        scan_name = f"scan {label_files[i].stem} of {seq_dir}"
+        r = nearest_within(rgb_ts, t, f"rgb for {scan_name}")
+        rgb = Image.open(seq_dir / config.RGB / f"{r:06d}.png").convert("RGB")
         size = (rgb.width // DOWNSCALE, rgb.height // DOWNSCALE)
-        sem = np.asarray(Image.open(seq_dir / config.SEMANTIC / f"{sem_of[key]:06d}.png"))
+        m = nearest_within(sem_ts, t, f"semantic for {scan_name}")
+        sem = np.asarray(Image.open(seq_dir / config.SEMANTIC / f"{m:06d}.png"))
         trav = np.asarray(Image.open(label_files[i]))
-        j = int(np.argmin(np.abs(pose_ts - t)))
+        j = nearest_within(pose_ts, t, f"pose for {scan_name}")
         T = pose7_to_matrix(poses[j])
         if origin is None:
             origin = np.linalg.inv(T)
@@ -116,9 +148,13 @@ def to_lerobot(seq_dirs, repo_id: str, *, lerobot_root, limit: int | None = None
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     seq_dirs = [Path(s) for s in seq_dirs]
+    rates = {str(s): sequence_fps(s) for s in seq_dirs}
+    if len(set(rates.values())) != 1:
+        raise ValueError(f"sequences at different rates, one dataset has one fps: {rates}")
+    fps = rates[str(seq_dirs[0])]
     probe = next(frames(seq_dirs[0], limit=1))
     h, w, _ = probe["observation.images.front"].shape
-    dataset = LeRobotDataset.create(repo_id=repo_id, fps=FPS, features=features(h, w),
+    dataset = LeRobotDataset.create(repo_id=repo_id, fps=fps, features=features(h, w),
                                     robot_type=ROBOT_TYPE, root=lerobot_root)
     for seq_dir in seq_dirs:
         for frame in frames(seq_dir, limit=limit):

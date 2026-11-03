@@ -24,7 +24,8 @@ flags) and ``ground_only`` (vegetation counted as not traversable).
 ``sim_cloud_agreement`` checks the label transfer itself against the sim's own
 semantic cloud (``points_semantic``): the points of a scan stamped like a
 semantic cloud are matched to it by nearest neighbour (< 1 cm), and the two
-class ids are compared where both exist.
+class ids are compared where both give a real class (``unlabeled`` = 0 is
+reported apart, see ``cloud_agreement_scores``).
 """
 
 from __future__ import annotations
@@ -90,7 +91,7 @@ def sim_cloud_agreement(seq_dir, max_dist: float = 0.01) -> dict:
     matched = total = clouds = 0
     for j, t in enumerate(cloud_ts):
         k = int(np.argmin(np.abs(lidar_ts - t)))
-        if abs(lidar_ts[k] - t) > 1e-4 or not (seq_dir / POINT_SEM / f"{k:06d}.npy").exists():
+        if abs(lidar_ts[k] - t) > config.SYNC_TOLERANCE or not (seq_dir / POINT_SEM / f"{k:06d}.npy").exists():
             continue
         cloud = np.load(seq_dir / config.POINTS_SEMANTIC / f"{j:06d}.npy")
         pts = np.load(seq_dir / config.LIDAR / f"{k:06d}.npy")
@@ -102,18 +103,35 @@ def sim_cloud_agreement(seq_dir, max_dist: float = 0.01) -> dict:
         matched += int(ok.sum())
         cm += np.bincount(ours[i[ok]].astype(np.int64) * 256 + cloud[ok, 3].astype(np.int64),
                           minlength=256 * 256).reshape(256, 256)
-    both = [c for c in config.CLASSES]
-    sub = cm[np.ix_(both, both)]
+    return {"clouds_compared": clouds, "cloud_points": int(total), "matched_points": int(matched),
+            **cloud_agreement_scores(cm)}
+
+
+def cloud_agreement_scores(cm: np.ndarray) -> dict:
+    """Agreement figures from a (256, 256) [ours, sim] confusion.
+
+    The headline (``agreement``) compares the points both sides give a real
+    class (1..7). ``unlabeled`` (0) is not a class but "no semantic" on
+    either side, so a point one side calls unlabeled is reported apart
+    (``*_unlabeled_*``) and ``agreement_incl_unlabeled`` keeps 0 as a class,
+    for the record.
+    """
+    real = [c for c in config.CLASSES if c != 0]
+    every = list(config.CLASSES)
+    sub = cm[np.ix_(real, real)]
+    sub0 = cm[np.ix_(every, every)]
+    safe = lambda a, b: float(a / b) if b else float("nan")
     return {
-        "clouds_compared": clouds,
-        "cloud_points": int(total),
-        "matched_points": int(matched),
         "both_labeled": int(sub.sum()),
-        "agreement_both_labeled": float(np.trace(sub) / sub.sum()) if sub.sum() else float("nan"),
-        "ours_labeled_sim_not": int(cm[both, config.NO_DATA].sum()),
-        "sim_labeled_ours_not": int(cm[config.NO_DATA, both].sum()),
-        "confusion_ours_rows_sim_cols": {config.CLASSES[a][0]: {config.CLASSES[b][0]: int(cm[a, b]) for b in both
-                                                               if cm[a, b]} for a in both},
+        "agreement": safe(np.trace(sub), sub.sum()),
+        "both_labeled_incl_unlabeled": int(sub0.sum()),
+        "agreement_incl_unlabeled": safe(np.trace(sub0), sub0.sum()),
+        "ours_class_sim_unlabeled": int(cm[real, 0].sum()),
+        "ours_unlabeled_sim_class": int(cm[0, real].sum()),
+        "ours_labeled_sim_not": int(cm[every, config.NO_DATA].sum()),
+        "sim_labeled_ours_not": int(cm[config.NO_DATA, every].sum()),
+        "confusion_ours_rows_sim_cols": {config.CLASSES[a][0]: {config.CLASSES[b][0]: int(cm[a, b]) for b in every
+                                                               if cm[a, b]} for a in every},
     }
 
 

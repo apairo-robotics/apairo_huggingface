@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from apairo_huggingface.sim_amiad import config
-from apairo_huggingface.sim_amiad.agreement import scores
+from apairo_huggingface.sim_amiad.agreement import cloud_agreement_scores, scores
 from apairo_huggingface.sim_amiad.extract import (
     check_classes_json,
     decode_points_semantic,
@@ -16,7 +16,8 @@ from apairo_huggingface.sim_amiad.extract import (
     pose7_to_matrix,
     runtime_lut,
 )
-from apairo_huggingface.sim_amiad.labeling import self_cells, self_mask, visible_labels
+from apairo_huggingface.sim_amiad.export import export_fps, nearest_within
+from apairo_huggingface.sim_amiad.labeling import camera_project, corridor_mask, self_cells, self_mask, visible_labels
 
 SEGMENT = Path(os.environ.get("SIM_AMIAD_SEGMENT", Path.home() / "data/sim_amiad/seg_t035_t065"))
 needs_segment = pytest.mark.skipif(not (SEGMENT / "point_sem").is_dir(), reason="no labelled sim segment")
@@ -54,6 +55,25 @@ def test_classes_json_matches_the_packaged_table():
     if not path.exists():
         pytest.skip("share not mounted")
     check_classes_json(path)
+
+
+def test_missing_rosbags_names_the_sim_extra(monkeypatch):
+    """rosbags is the optional [sim] extra: without it, extract says how to get it."""
+    import sys
+
+    from apairo_huggingface.sim_amiad import extract
+
+    monkeypatch.setitem(sys.modules, "rosbags.highlevel", None)    # import now raises ImportError
+    with pytest.raises(ImportError, match=r"apairo-huggingface\[sim\]"):
+        extract.extract("missing.mcap", "/nonexistent/out")
+
+
+def test_rosbags_is_not_a_core_dependency():
+    import tomllib
+
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())["project"]
+    assert not any(d.startswith("rosbags") for d in project["dependencies"])
+    assert any(d.startswith("rosbags") for d in project["optional-dependencies"]["sim"])
 
 
 def test_classes_json_drift_is_refused(tmp_path):
@@ -105,7 +125,102 @@ def test_self_filter_keeps_the_fixed_ground_pattern():
     assert not mask[2:].any()
 
 
+def _distorted_camera():
+    from apairo.core.config import CameraIntrinsics
+
+    K = np.array([[500.0, 1.5, 640.0], [0.0, 480.0, 360.0], [0.0, 0.0, 1.0]])
+    return CameraIntrinsics(K=K, distortion=np.array([-0.3, 0.1, 0.002, -0.001, 0.0]), width=1280, height=720)
+
+
+def test_corridor_and_lidar_share_one_camera_model():
+    """The corridor quads and the lidar points go through the same K (with
+    skew) and plumb-bob distortion: the corridor projection was pinhole only."""
+    from apairo.core.sample import Sample
+    from apairo_preprocess import LidarCameraProjection
+
+    cam = _distorted_camera()
+    rng = np.random.default_rng(0)
+    pts = np.column_stack([rng.uniform(-8, 8, 500), rng.uniform(-4, 4, 500), rng.uniform(1, 30, 500)])
+    uv = LidarCameraProjection(intrinsics=cam, extrinsics=np.eye(4))(Sample(data={"lidar": pts}))
+    ok = np.isfinite(uv[:, 0])
+    assert ok.sum() > 300
+    u, v, z = camera_project(pts, cam)
+    np.testing.assert_allclose(np.column_stack([u, v, z])[ok], uv[ok], atol=1e-3)
+    pinhole_u = cam.K[0, 0] * pts[:, 0] / pts[:, 2] + cam.K[0, 2]
+    assert np.abs(pinhole_u[ok] - u[ok]).max() > 50        # the distortion matters at this strength
+
+
+def test_corridor_mask_lands_where_the_lidar_projection_does():
+    """A small ground quad 6 m ahead and 3 m to the side: the mask covers the
+    pixel the lidar projection gives its centre, not the pinhole pixel."""
+    from apairo.core.sample import Sample
+    from apairo_preprocess import LidarCameraProjection
+
+    cam = _distorted_camera()
+    left = np.array([[2.8, 1.0, 5.8], [2.8, 1.0, 6.2]])     # camera optical frame = world here
+    right = np.array([[3.2, 1.0, 5.8], [3.2, 1.0, 6.2]])
+    mask = corridor_mask(left, right, np.eye(4), cam, np.zeros((720, 1280), np.uint16))
+    centre = np.array([[3.0, 1.0, 6.0]])
+    uv = LidarCameraProjection(intrinsics=cam, extrinsics=np.eye(4))(Sample(data={"lidar": centre}))
+    assert mask[int(uv[0, 1]), int(uv[0, 0])]
+    pin_u = int(cam.K[0, 0] * 3.0 / 6.0 + cam.K[0, 1] * 1.0 / 6.0 + cam.K[0, 2])
+    pin_v = int(cam.K[1, 1] * 1.0 / 6.0 + cam.K[1, 2])
+    assert not mask[pin_v, pin_u]
+
+
+# ------------------------------------------------------------------ export
+
+def test_export_fps_is_measured_from_the_stamps():
+    t = 35.0 + np.arange(400) / 60.0
+    assert export_fps(t, stride=4) == 15
+    assert export_fps(t, stride=6) == 10
+
+
+def test_export_fps_refuses_a_missing_scan():
+    t = np.delete(35.0 + np.arange(400) / 60.0, 101)          # one scan dropped: a 2-tick interval
+    with pytest.raises(ValueError, match="irregular"):
+        export_fps(t, stride=4)
+
+
+def test_export_fps_refuses_a_fractional_rate():
+    with pytest.raises(ValueError, match="whole number"):
+        export_fps(np.arange(100) * 0.07, stride=1)
+
+
+def test_export_matches_images_with_the_labelling_tolerance():
+    """The export matched images by exact microsecond equality while the
+    labelling accepts config.SYNC_TOLERANCE: stamps one rounding apart, or a
+    few ms apart, were refused by the export only."""
+    ts = np.array([10.0, 10.0 + 1 / 60, 10.0 + 2 / 60])
+    assert nearest_within(ts, 10.0000005001, "rgb") == 0     # rounds to a different microsecond
+    assert nearest_within(ts, ts[1] + 0.9 * config.SYNC_TOLERANCE, "rgb") == 1
+    with pytest.raises(ValueError, match="no rgb"):
+        nearest_within(ts, ts[1] + 1.1 * config.SYNC_TOLERANCE, "rgb")
+
+
+def test_one_sync_tolerance_for_labelling_and_export():
+    from apairo_huggingface.sim_amiad import export, labeling
+
+    assert not hasattr(labeling, "SYNC_TOLERANCE") and not hasattr(export, "SYNC_TOLERANCE")
+    assert 0 < config.SYNC_TOLERANCE < 0.5 / 60                # unambiguous on the 60 Hz tick
+
+
 # --------------------------------------------------------------- agreement
+
+def test_cloud_agreement_leaves_unlabeled_out_of_the_headline():
+    ground, tree, veg = config.NAME_TO_ID["ground"], config.NAME_TO_ID["tree"], config.NAME_TO_ID["vegetation"]
+    cm = np.zeros((256, 256), dtype=np.int64)               # [ours, sim]
+    cm[ground, ground], cm[veg, veg], cm[ground, veg] = 60, 30, 10
+    cm[tree, 0] = 20                                        # sim says unlabeled
+    cm[0, 0] = 50                                           # both unlabeled
+    cm[veg, config.NO_DATA] = 7
+    s = cloud_agreement_scores(cm)
+    assert s["both_labeled"] == 100 and s["agreement"] == pytest.approx(0.9)
+    assert s["both_labeled_incl_unlabeled"] == 170
+    assert s["agreement_incl_unlabeled"] == pytest.approx(140 / 170)
+    assert s["ours_class_sim_unlabeled"] == 20 and s["ours_unlabeled_sim_class"] == 0
+    assert s["ours_labeled_sim_not"] == 7
+
 
 def test_pu_scores_from_a_confusion():
     cm = np.zeros((2, 256), dtype=np.int64)
