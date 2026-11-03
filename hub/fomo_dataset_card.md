@@ -73,7 +73,7 @@ frame["action"]                             # [linear_velocity, angular_velocity
 | `255` | **no data**: neither driven nor hit by a lidar return. |
 
 Labels are conservative by construction: absence of `1` means "not
-demonstrated", never "untraversable". Across the 12 processed trajectories, about 9 % of
+demonstrated", never "untraversable". Across the 11 exported trajectories, about 9 % of
 pixels are `1`, 10 % are `0` and 81 % are `255`.
 
 ## Episodes
@@ -97,7 +97,7 @@ and compared. `gt_stamps` is the number of GNSS stamps scored.
 | 9 | `2025-10-14/red_2025-10-14-11-41` | 1,606 | 306 | 1,690 | 0.211 | 0.60 | 0.00 | 14.2 |
 | 10 | `2025-11-03/red_2025-11-03-18-30` | 1,803 | 302 | 1,922 | 0.152 | 0.59 | 0.00 | 1.8 |
 
-KISS-ICP drift stays at 0.10-0.21 m RMSE over ~300 m on every deployment,
+KISS-ICP drift stays at 0.15-0.21 m RMSE over ~300 m on every exported deployment,
 snow included, so the corridor is placed on the camera image by the odometry
 alone.
 
