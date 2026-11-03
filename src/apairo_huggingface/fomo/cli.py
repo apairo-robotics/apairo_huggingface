@@ -21,7 +21,7 @@ from . import config
 
 def _trajectories(root: Path) -> list[Path]:
     """Processed trajectory dirs under ``root`` (``<deployment>/<trajectory>``)."""
-    return sorted(p.parent for p in root.glob(f"*/*/{config.TRAV_MASK}/timestamps.txt"))
+    return sorted(p.parent.parent for p in root.glob(f"*/*/{config.TRAV_MASK}/timestamps.txt"))
 
 
 def cmd_list(args) -> None:
