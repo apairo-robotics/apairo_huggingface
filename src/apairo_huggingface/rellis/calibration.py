@@ -14,12 +14,17 @@ scoring the label agreement with the official 2D annotations
   and is not a camera calibration.
 - **Intrinsics.** ``Rellis-3D/<seq>/camera_info.txt`` gives
   ``fx fy cx cy`` = 2813.64 2808.33 969.29 624.05 (the 02/2021 recalibration;
-  identical in every sequence). The released JPEGs behave as **rectified**:
-  the plumb-bob coefficients hard-coded in the official ``lidar2img`` notebook
-  (k1 = -0.134) lower the agreement in every sequence (0.755 vs 0.826 over 200
-  frames, 40 per sequence), and any k1 in [0, 0.06] scores the same as none. The older
-  ``calibrationdata_pylon_iris5.6`` intrinsics (cx = 881, Feb 2020) also score
-  lower. So the projection is pinhole, no distortion.
+  identical in every sequence). Scores below are mean point agreement over
+  the calib-check sample (40 annotated frames per sequence, 200 in all, seed
+  0). The released JPEGs behave as **rectified**: the plumb-bob coefficients
+  hard-coded in the official ``lidar2img`` notebook (k1 = -0.134) lower the
+  agreement in every sequence (0.755 vs 0.826). A positive k1 of 0.02 / 0.04
+  / 0.06 moves the mean by +0.0001 / +0.0004 / +0.0006, and no sequence by
+  more than +0.0022. The older ``calibrationdata_pylon_iris5.6`` intrinsics
+  (cx = 881, Feb 2020) score lower in every sequence: 0.790 with its camera
+  matrix, 0.788 with its projection matrix, 0.734 with its camera matrix and
+  distortion. So the projection is pinhole with ``camera_info.txt``, no
+  distortion.
 - **Residual.** Compact, crisply bounded classes (barrier, puddle, bush) agree
   best when the points are moved 16-24 px down (about 0.3-0.5 deg of pitch).
   It is reported, not corrected: a correction fitted on the 2D annotations

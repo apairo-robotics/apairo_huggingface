@@ -274,3 +274,18 @@ def test_calib_check_on_real_frames_scores_scan_offsets():
     offsets = r["chosen, scan i+d on image i: d -> agreement"]
     assert sorted(offsets) == SCAN_OFFSETS
     assert offsets[0] == pytest.approx(r["chosen: inv(transforms.yaml), no distortion"], abs=1e-4)
+
+
+@pytest.mark.skipif(not (RELLIS_ROOT / "Rellis-3D" / "00000").is_dir(), reason="RELLIS-3D not available")
+def test_calib_check_on_real_frames_scores_k1_and_iris_variants():
+    from apairo_huggingface.rellis.calibcheck import K1_SWEEP, calibration_check
+
+    r = calibration_check(RELLIS_ROOT, ["00000"], frames_per_seq=2)
+    chosen = r["00000"]["chosen: inv(transforms.yaml), no distortion"]
+    assert all(f"inv(transforms.yaml), k1 = {k1:.2f}" in r["00000"] for k1 in K1_SWEEP)
+    assert r["00000"]["inv(transforms.yaml), k1 = 0.00"] == pytest.approx(chosen)
+    if (RELLIS_ROOT / "raw_data" / "calibrationdata_pylon_iris5.6.zip").exists():
+        assert "iris5.6 camera matrix, no distortion" in r["00000"]
+    summary = r["all"]["chosen: inv(transforms.yaml), no distortion"]
+    assert summary["frames"] == 2 and summary["min"] <= summary["mean"] <= summary["max"]
+    assert summary["mean"] == pytest.approx(chosen, abs=1e-4)
