@@ -16,8 +16,8 @@ scoring the label agreement with the official 2D annotations
   ``fx fy cx cy`` = 2813.64 2808.33 969.29 624.05 (the 02/2021 recalibration;
   identical in every sequence). The released JPEGs behave as **rectified**:
   the plumb-bob coefficients hard-coded in the official ``lidar2img`` notebook
-  (k1 = -0.134) lower the agreement in every sequence (0.767 vs 0.835 over 40
-  frames), and any k1 in [0, 0.06] scores the same as none. The older
+  (k1 = -0.134) lower the agreement in every sequence (0.755 vs 0.826 over 200
+  frames, 40 per sequence), and any k1 in [0, 0.06] scores the same as none. The older
   ``calibrationdata_pylon_iris5.6`` intrinsics (cx = 881, Feb 2020) also score
   lower. So the projection is pinhole, no distortion.
 - **Residual.** Compact, crisply bounded classes (barrier, puddle, bush) agree

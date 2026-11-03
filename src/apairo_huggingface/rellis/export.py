@@ -17,6 +17,10 @@ exists, the pose and the official lidar split of its co-captured scan.
   scan; 0 train / 1 val / 2 test), the RELLIS scan / image index, and whether
   an official 2D annotation exists.
 - **label_2d**: the official annotation, 255 on frames without one.
+
+Frames are keyed by their image: the masks are matched to each image by stamp,
+checked to carry the image's file stem, and an image of the requested range
+without its masks is an error, never a silently shorter episode.
 """
 
 from __future__ import annotations
@@ -71,17 +75,32 @@ def frames(root, view, splits, limit: int | None = None):
         tolerance=config.TOLERANCE,
     )
     for key in (config.SEM_MASK, config.TRAV_MASK):
-        if np.abs(sync.time_offsets(key)).max() > 1e-3:
+        if len(sync) and np.abs(sync.time_offsets(key)).max() > 1e-3:
             raise ValueError(f"{seq}: {key} is not on the camera clock")
     camera_files = ds.loaders[config.CAMERA].files
     stamps = np.asarray(ds.timestamps[config.CAMERA], dtype=np.float64)
+    n = len(camera_files) if limit is None else min(limit, len(camera_files))
+    # synchronize() drops the images without masks: index by the image itself.
+    image_of = np.asarray(sync.frame_indices[config.CAMERA])
+    missing = sorted(set(range(n)) - set(image_of.tolist()))
+    if missing:
+        raise ValueError(f"{seq}: {len(missing)} of the first {n} images have no sem_mask / trav_mask "
+                         f"(first: {Path(camera_files[missing[0]]).stem}); run process on the "
+                         f"whole sequence or export with a smaller --limit")
     poses = load_poses(root, seq) @ LIDAR_FROM_ROBOT       # T_world_robot, one per scan = per image
+    if len(poses) != len(camera_files):
+        raise ValueError(f"{seq}: {len(poses)} poses for {len(camera_files)} images")
     origin = np.linalg.inv(poses[0])
     yaw = np.unwrap(np.arctan2(poses[:, 1, 0], poses[:, 0, 0]))
-    n = len(sync) if limit is None else min(limit, len(sync))
-    for k in range(n):
+    mask_files = {key: ds.loaders[key].files for key in (config.SEM_MASK, config.TRAV_MASK)}
+    for k in np.flatnonzero(image_of < n):
+        k, i = int(k), int(image_of[k])                    # view position, image (= scan) index
+        stem = Path(camera_files[i]).stem
+        for key, files in mask_files.items():
+            got = Path(files[int(sync.frame_indices[key][k])]).stem
+            if got != stem:
+                raise ValueError(f"{seq}: image {stem} was matched to {key} {got}")
         sample = sync[k]
-        stem = Path(camera_files[k]).stem
         image = Image.fromarray(np.asarray(sample.data[config.CAMERA]))
         size = (image.width // DOWNSCALE, image.height // DOWNSCALE)
         ref_path = view / config.LABEL_2D / f"{stem}.png"
@@ -89,10 +108,10 @@ def frames(root, view, splits, limit: int | None = None):
             label_2d, has_2d = np.asarray(Image.open(ref_path)), 1
         else:
             label_2d, has_2d = np.full((image.height, image.width), config.NO_DATA, np.uint8), 0
-        a = min(k, len(poses) - 2)                          # forward difference k -> k+1
+        a = min(i, len(poses) - 2)                          # forward difference i -> i+1
         dt = stamps[a + 1] - stamps[a]
         step = np.linalg.inv(poses[a]) @ poses[a + 1]
-        pose = origin @ poses[k]
+        pose = origin @ poses[i]
         yield {
             "observation.images.front": np.asarray(image.resize(size, Image.BILINEAR)),
             "observation.semantic_mask": _mask3(np.asarray(sample.data[config.SEM_MASK]), size),
@@ -100,7 +119,7 @@ def frames(root, view, splits, limit: int | None = None):
             "observation.label_2d": _mask3(label_2d, size),
             "observation.state": np.concatenate(
                 [pose[:3, 3], Rotation.from_matrix(pose[:3, :3]).as_quat()]).astype(np.float32),
-            "observation.frame_info": np.array([splits[(seq, k)], k, has_2d], dtype=np.int64),
+            "observation.frame_info": np.array([splits[(seq, i)], i, has_2d], dtype=np.int64),
             "action": np.array([step[0, 3] / dt, (yaw[a + 1] - yaw[a]) / dt], dtype=np.float32),
             "task": TASK,
         }

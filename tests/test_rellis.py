@@ -158,3 +158,119 @@ def test_masks_on_real_frames(tmp_path):
             m = np.asarray(Image.open(f))
             assert m.shape == (1200, 1920) and m.dtype == np.uint8
             assert set(np.unique(m)) <= allowed and 255 in set(np.unique(m))
+
+
+# ------------------------------------------------- review regressions
+
+def _image_tree(tmp_path, n=4, size=(8, 6)):
+    """A tiny RELLIS-3D sequence: n images, scans, labels, poses; returns (root, view)."""
+    root, seq = tmp_path / "rellis", "00000"
+    src = root / "Rellis-3D" / seq
+    for name in config.SOURCE_DIRS:
+        (src / name).mkdir(parents=True)
+    for k in range(n):
+        stem = f"frame{k:06d}-1581624652_{100 * k:03d}"
+        Image.fromarray(np.full((size[1], size[0], 3), 10 * k, np.uint8)).save(src / config.CAMERA / f"{stem}.jpg")
+        np.zeros((5, 4), np.float32).tofile(src / "os1_cloud_node_kitti_bin" / f"{k:06d}.bin")
+        np.zeros(5, "<u4").tofile(src / "os1_cloud_node_semantickitti_label_id" / f"{k:06d}.label")
+    poses = np.tile(np.eye(4)[:3].reshape(1, 12), (n, 1))
+    poses[:, 3] = -np.arange(n)                     # 1 m per frame along the lidar -x
+    np.savetxt(src / "poses.txt", poses)
+    (root / "pt_train.lst").write_text("".join(f"{seq}/os1_cloud_node_kitti_bin/{k:06d}.bin x\n" for k in range(n)))
+    (root / "pt_val.lst").write_text("")
+    (root / "pt_test.lst").write_text("")
+    return root, make_view(root, seq, tmp_path / "out")
+
+
+def _write_masks(view, indices):
+    from apairo import RawDataset
+
+    files = sorted((view / config.CAMERA).glob("*.jpg"))
+    stamps = []
+    for name in (config.SEM_MASK, config.TRAV_MASK):
+        (view / name).mkdir()
+    for i in indices:
+        stem = files[i].stem
+        Image.fromarray(np.full((6, 8), 3, np.uint8)).save(view / config.SEM_MASK / f"{stem}.png")
+        Image.fromarray(np.full((6, 8), 1, np.uint8)).save(view / config.TRAV_MASK / f"{stem}.png")
+        s, ms = stem.split("-")[1].split("_")
+        stamps.append(int(s) + int(ms) / 1000)
+    for name in (config.SEM_MASK, config.TRAV_MASK):
+        np.savetxt(view / name / "timestamps.txt", stamps, fmt="%.3f")
+        RawDataset.register_channel(view, name, "img", sources=[config.LIDAR, config.LABELS, config.CAMERA])
+
+
+def test_export_refuses_images_without_masks(tmp_path):
+    # process --limit 2 then export: frames 2 and 3 must not vanish silently.
+    from apairo_huggingface.rellis.export import frames
+
+    root, view = _image_tree(tmp_path)
+    _write_masks(view, [0, 1])
+    with pytest.raises(ValueError, match="2 of the first 4 images"):
+        list(frames(root, view, lidar_splits(root)))
+    assert [f["observation.frame_info"][1] for f in frames(root, view, lidar_splits(root), limit=2)] == [0, 1]
+
+
+def test_export_keys_frames_by_image_not_by_view_position(tmp_path):
+    # A hole in the masks used to shift every later frame onto the wrong image index.
+    from apairo_huggingface.rellis.export import frames
+
+    root, view = _image_tree(tmp_path)
+    _write_masks(view, [0, 2, 3])
+    with pytest.raises(ValueError, match="first: frame000001"):
+        list(frames(root, view, lidar_splits(root)))
+    out = list(frames(root, view, lidar_splits(root), limit=1))
+    assert len(out) == 1 and out[0]["observation.frame_info"][1] == 0
+
+
+def test_export_full_masks_give_every_frame_its_own_index(tmp_path):
+    from apairo_huggingface.rellis.export import frames
+
+    root, view = _image_tree(tmp_path)
+    _write_masks(view, range(4))
+    out = list(frames(root, view, lidar_splits(root)))
+    assert [int(f["observation.frame_info"][1]) for f in out] == [0, 1, 2, 3]
+    assert [int(f["observation.images.front"][0, 0, 0]) for f in out] == [0, 10, 20, 30]
+    assert out[1]["action"][0] == pytest.approx(10.0, rel=1e-3)   # 1 m in 0.1 s, forward
+
+
+def test_coverage_columns_share_the_same_frames(tmp_path):
+    # A frame without a trav mask (all 255) must not dilute "with data" only.
+    from apairo_huggingface.rellis.labeling import coverage
+
+    view = tmp_path / "00000"
+    for name in (config.SEM_MASK, config.TRAV_MASK):
+        (view / name).mkdir(parents=True)
+    no_trav = np.full((2, 4), 255, np.uint8)
+    trav = np.array([[1, 1, 0, 255], [1, 1, 0, 255]], np.uint8)    # 3/4 with data, 1/2 driven
+    sem = np.array([[3, 255, 255, 255], [3, 255, 255, 255]], np.uint8)
+    for stem, tm in (("a", no_trav), ("b", trav)):
+        Image.fromarray(tm).save(view / config.TRAV_MASK / f"{stem}.png")
+        Image.fromarray(sem).save(view / config.SEM_MASK / f"{stem}.png")
+    c = coverage(view)
+    assert c["images"] == 2 and c["trav_mask_frames_with_data"] == 1
+    assert c["sem_mask_pixel_coverage_mean"] == pytest.approx(0.25)
+    assert c["trav_mask_pixel_coverage_mean"] == pytest.approx(0.75)
+    assert c["trav_mask_driven_fraction_mean"] == pytest.approx(0.5)
+    assert c["trav_mask_driven_fraction_mean"] <= c["trav_mask_pixel_coverage_mean"]
+
+
+def test_calib_check_reads_png_annotations_only(tmp_path):
+    from apairo_huggingface.rellis.calibcheck import annotations
+
+    labels = tmp_path / "Rellis-3D" / "00000" / config.LABEL_2D
+    labels.mkdir(parents=True)
+    Image.fromarray(np.zeros((2, 2), np.uint8)).save(labels / "frame001493-1581624802_049.png")
+    Image.fromarray(np.zeros((2, 2, 4), np.uint8)).save(labels / "frame001493-1581624802_049.jpg", format="PNG")
+    assert [p.name for p in annotations(tmp_path, "00000")] == ["frame001493-1581624802_049.png"]
+
+
+@pytest.mark.skipif(not (RELLIS_ROOT / "Rellis-3D" / "00000").is_dir(), reason="RELLIS-3D not available")
+def test_calib_check_on_real_frames_scores_scan_offsets():
+    from apairo_huggingface.rellis.calibcheck import SCAN_OFFSETS, annotations, calibration_check
+
+    assert not any(p.suffix != ".png" for p in annotations(RELLIS_ROOT, "00000"))
+    r = calibration_check(RELLIS_ROOT, ["00000"], frames_per_seq=2)["00000"]
+    offsets = r["chosen, scan i+d on image i: d -> agreement"]
+    assert sorted(offsets) == SCAN_OFFSETS
+    assert offsets[0] == pytest.approx(r["chosen: inv(transforms.yaml), no distortion"], abs=1e-4)

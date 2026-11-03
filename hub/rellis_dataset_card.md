@@ -49,11 +49,28 @@ They are stored at 960x600 (nearest-neighbour downscale of the 1920x1200 masks).
   lidar frame), read per sequence. The intrinsics come from `camera_info.txt`.
   The released images are **rectified**: the distortion hard-coded in the
   official `lidar2img` notebook lowers agreement with the 2D labels in every
-  sequence. Point-level agreement over 3 random annotated frames per sequence:
-  0.76-0.90 for this chain, 0.15-0.37 with the transform not inverted.
+  sequence. Point-level agreement (share of projected points whose lidar label
+  equals the 2D label, void excluded) over 40 random annotated frames per
+  sequence, 200 in all (`apairo-rellis calib-check`, seed 0): 0.76-0.91 for
+  this chain (mean 0.826), 0.69-0.83 with the notebook distortion (mean
+  0.755), 0.11-0.26 with the transform not inverted.
 - **Time.** Scans have no stamp of their own. Each scan was exported with the
-  image of the same index and borrows that image's filename stamp. Scan i agrees
-  best with image i; agreement drops with image i plus or minus 1 or 3.
+  image of the same index and borrows that image's filename stamp. Projecting
+  scan i+d onto annotated image i, on the same 200 frames:
+
+  | d (frames) | -2 | -1 | 0 | +1 | +2 |
+  |---|---|---|---|---|---|
+  | 00000 | 0.754 | 0.751 | **0.762** | 0.737 | 0.737 |
+  | 00001 | 0.826 | 0.878 | **0.912** | 0.817 | 0.832 |
+  | 00002 | 0.875 | 0.857 | **0.881** | 0.846 | 0.868 |
+  | 00003 | 0.779 | **0.801** | 0.799 | 0.781 | 0.758 |
+  | 00004 | 0.770 | **0.778** | 0.776 | 0.767 | 0.758 |
+  | mean | 0.801 | 0.813 | **0.826** | 0.790 | 0.791 |
+
+  d = 0 scores highest on average and in 00000-00002. In 00003 and 00004,
+  d = -1 is ahead by 0.003 and 0.002, within frame-to-frame noise: no offset
+  of the pairing is detected there, and a one-frame (0.1 s) lag is not ruled
+  out either.
 - **Density.** Raw splat: every point is a disc of radius 2 px, and the nearest
   point wins a pixel. A point more than 0.5 m behind the nearest return of its
   8x8 px bin is dropped (occlusion). There is no other dilation. Returns closer
@@ -66,13 +83,17 @@ They are stored at 960x600 (nearest-neighbour downscale of the 1920x1200 masks).
 
 ## Coverage
 
+Means of per-image pixel shares (`apairo-rellis coverage`, read back from the
+written masks). `sem_mask` is averaged over every image; both trav columns are
+averaged over the same frames, those with a trav mask.
+
 | seq | images | sem_mask pixels with data | frames with a trav mask | trav pixels with data | driven pixels |
 |---|---|---|---|---|---|
-| 00000 | 2847 | 4.3 % | 2521 | 16.9 % | 15.6 % |
-| 00001 | 2319 | 3.3 % | 2037 | 15.5 % | 15.3 % |
-| 00002 | 4147 | 4.0 % | 4013 | 19.1 % | 17.0 % |
-| 00003 | 2184 | 3.3 % | 1866 | 14.8 % | 15.0 % |
-| 00004 | 2059 | 3.3 % | 1870 | 15.7 % | 15.0 % |
+| 00000 | 2847 | 4.3 % | 2521 | 19.0 % | 15.6 % |
+| 00001 | 2319 | 3.3 % | 2037 | 17.7 % | 15.3 % |
+| 00002 | 4147 | 4.0 % | 4013 | 19.7 % | 17.0 % |
+| 00003 | 2184 | 3.3 % | 1866 | 17.3 % | 15.0 % |
+| 00004 | 2059 | 3.3 % | 1870 | 17.3 % | 15.0 % |
 
 ## Agreement with the official 2D annotations (benchmark)
 

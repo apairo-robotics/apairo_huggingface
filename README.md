@@ -181,6 +181,7 @@ distortion), each checked by scoring projections against the 2D annotations.
 
 ```bash
 apairo-rellis process   --root /data/rellis --out ~/data/rellis_derived    # all 5 sequences
+apairo-rellis coverage  --out ~/data/rellis_derived                        # coverage table, from the masks
 apairo-rellis agreement --root /data/rellis --out ~/data/rellis_derived
 apairo-rellis overlay ~/data/rellis_derived/00003 --every 500 --png-dir /tmp/overlays
 apairo-rellis export ~/data/rellis_derived 00003 --root /data/rellis --lerobot-root ~/data/rellis_lerobot

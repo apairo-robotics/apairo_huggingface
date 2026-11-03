@@ -179,9 +179,12 @@ def label_sequence(root, seq: str, out_root, *, overwrite: bool = False,
         tolerance=config.TOLERANCE,
     )
     scan_of = np.asarray(sync.frame_indices[config.LIDAR])
-    if not (np.abs(sync.time_offsets(config.LIDAR)) <= config.TOLERANCE).all():
-        raise ValueError(f"{seq}: an image has no scan within {config.TOLERANCE} s")
     camera_files = ds.loaders[config.CAMERA].files
+    # synchronize() drops the images without a scan within TOLERANCE; masks
+    # are indexed by image below, so every image must have kept its scan.
+    if len(sync) != len(camera_files):
+        raise ValueError(f"{seq}: {len(camera_files) - len(sync)} of {len(camera_files)} images "
+                         f"have no scan within {config.TOLERANCE} s")
     stamps = np.asarray(ds.timestamps[config.CAMERA], dtype=np.float64)
 
     poses = load_poses(root, seq)
@@ -209,7 +212,6 @@ def label_sequence(root, seq: str, out_root, *, overwrite: bool = False,
     )
 
     n = len(sync) if limit is None else min(limit, len(sync))
-    sem_cov, trav_cov, trav_pos, trav_frames = [], [], [], 0
     for a in range(0, n, chunk):
         b = min(a + chunk, n)
         samples = [sync[k] for k in range(a, b)]
@@ -242,28 +244,41 @@ def label_sequence(root, seq: str, out_root, *, overwrite: bool = False,
                 future = poses[j:, :3, 3]   # from the current pose on
                 left, right = corridor_world(future)
                 tm[corridor_mask(left, right, E @ np.linalg.inv(poses[j]), K, uv)] = 1
-                trav_frames += 1
-                trav_pos.append(float((tm == 1).mean()))
             else:
                 tm = np.full((IMAGE_HEIGHT, IMAGE_WIDTH), config.NO_DATA, dtype=np.uint8)
             stem = Path(camera_files[k]).stem
             Image.fromarray(sem, mode="L").save(view / config.SEM_MASK / f"{stem}.png")
             Image.fromarray(tm, mode="L").save(view / config.TRAV_MASK / f"{stem}.png")
-            sem_cov.append(float((sem != config.NO_DATA).mean()))
-            trav_cov.append(float((tm != config.NO_DATA).mean()))
         logger.info("%s: frames [%d, %d) / %d  %.0f s", seq, a, b, n, time.time() - t0)
 
     for name in (config.SEM_MASK, config.TRAV_MASK):
         np.savetxt(view / name / "timestamps.txt", stamps[:n], fmt="%.3f")
         RawDataset.register_channel(view, name, "img", sources=[config.LIDAR, config.LABELS, config.CAMERA])
-    report = {
-        "sequence": seq,
-        "images": n,
-        "sem_mask_pixel_coverage_mean": float(np.mean(sem_cov)),
-        "trav_mask_frames_with_data": trav_frames,
-        "trav_mask_pixel_coverage_mean": float(np.mean(trav_cov)),
-        "trav_mask_driven_fraction_mean": float(np.mean(trav_pos)) if trav_pos else 0.0,
-        "seconds": round(time.time() - t0),
-    }
+    report = {"sequence": seq, **coverage(view), "seconds": round(time.time() - t0)}
     logger.info("%s", report)
     return report
+
+
+def coverage(view) -> dict:
+    """Mask statistics of one processed view, read back from the written masks.
+
+    ``sem_mask`` coverage is averaged over every image. The ``trav_mask``
+    figures are averaged over the frames that have one (any pixel other than
+    255; the others are all-255 for lack of path ahead), so both are shares of
+    the same images and driven <= with data holds per frame and on average."""
+    view = Path(view)
+    sem_cov = [float((np.asarray(Image.open(f)) != config.NO_DATA).mean())
+               for f in sorted((view / config.SEM_MASK).glob("*.png"))]
+    trav_cov, trav_pos = [], []
+    for f in sorted((view / config.TRAV_MASK).glob("*.png")):
+        tm = np.asarray(Image.open(f))
+        if (tm != config.NO_DATA).any():
+            trav_cov.append(float((tm != config.NO_DATA).mean()))
+            trav_pos.append(float((tm == 1).mean()))
+    return {
+        "images": len(sem_cov),
+        "sem_mask_pixel_coverage_mean": float(np.mean(sem_cov)) if sem_cov else 0.0,
+        "trav_mask_frames_with_data": len(trav_cov),
+        "trav_mask_pixel_coverage_mean": float(np.mean(trav_cov)) if trav_cov else 0.0,
+        "trav_mask_driven_fraction_mean": float(np.mean(trav_pos)) if trav_pos else 0.0,
+    }

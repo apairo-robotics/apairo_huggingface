@@ -9,7 +9,9 @@ overlays (points coloured by label over the image).
 Candidates: the chosen chain (inverse of ``transforms.yaml``, pinhole, no
 distortion), the stored transform used without inversion, and the plumb-bob
 coefficients hard-coded in the official ``lidar2img`` notebook. The chosen
-chain is also scored under vertical pixel shifts, to measure any residual.
+chain is also scored under vertical pixel shifts, to measure any residual, and
+with the scan of a neighbouring index projected onto the annotated image
+(``SCAN_OFFSETS``), to check that scan i is the one captured with image i.
 """
 
 from __future__ import annotations
@@ -24,6 +26,12 @@ from .calibration import IMAGE_HEIGHT, IMAGE_WIDTH, camera_from_lidar, intrinsic
 
 NOTEBOOK_DISTORTION = np.array([-0.134313, -0.025905, 0.002181, 0.00084, 0.0])
 SHIFTS = [-16, -8, 0, 8, 16, 24, 32]
+SCAN_OFFSETS = [-2, -1, 0, 1, 2]
+
+
+def annotations(root, seq) -> list[Path]:
+    """The official 2D label PNGs of one sequence (00000 also holds a stray .jpg)."""
+    return sorted((Path(root) / "Rellis-3D" / seq / config.LABEL_2D).glob("*.png"))
 
 
 def project(xyz, T, K, dist=None):
@@ -42,12 +50,20 @@ def project(xyz, T, K, dist=None):
     return u[inside], v[inside], np.flatnonzero(front)[inside]
 
 
-def _frame(root, seq, label_path):
-    idx = int(label_path.name[5:11])
+def _scan(root, seq, idx):
+    """``(xyz, labels)`` of scan ``idx``, or ``None`` past either end of the sequence."""
     sdir = Path(root) / "Rellis-3D" / seq
-    xyz = np.fromfile(sdir / "os1_cloud_node_kitti_bin" / f"{idx:06d}.bin", np.float32).reshape(-1, 4)[:, :3]
+    bin_path = sdir / "os1_cloud_node_kitti_bin" / f"{idx:06d}.bin"
+    if idx < 0 or not bin_path.exists():
+        return None
+    xyz = np.fromfile(bin_path, np.float32).reshape(-1, 4)[:, :3]
     labels = np.fromfile(sdir / "os1_cloud_node_semantickitti_label_id" / f"{idx:06d}.label", np.uint32) & 0xFFFF
-    return xyz.astype(np.float64), labels, np.asarray(Image.open(label_path))
+    return xyz.astype(np.float64), labels
+
+
+def _frame(root, seq, label_path):
+    xyz, labels = _scan(root, seq, int(label_path.name[5:11]))
+    return xyz, labels, np.asarray(Image.open(label_path))
 
 
 def _agree(u, v, labels, ref, dv=0):
@@ -56,7 +72,7 @@ def _agree(u, v, labels, ref, dv=0):
     return float((g[keep] == labels[keep]).mean()) if keep.any() else float("nan")
 
 
-def calibration_check(root, sequences, frames_per_seq: int = 8, seed: int = 0, png_dir=None) -> dict:
+def calibration_check(root, sequences, frames_per_seq: int = 40, seed: int = 0, png_dir=None) -> dict:
     rng = np.random.default_rng(seed)
     report = {}
     for seq in sequences:
@@ -66,10 +82,11 @@ def calibration_check(root, sequences, frames_per_seq: int = 8, seed: int = 0, p
             "transforms.yaml not inverted": (lidar_from_camera(root, seq), None),
             "inv(transforms.yaml), notebook distortion": (camera_from_lidar(root, seq), NOTEBOOK_DISTORTION),
         }
-        refs = sorted((Path(root) / "Rellis-3D" / seq / config.LABEL_2D).iterdir())
+        refs = annotations(root, seq)
         picks = [refs[i] for i in rng.choice(len(refs), frames_per_seq, replace=False)]
         scores = {name: [] for name in chains}
         shift = np.zeros(len(SHIFTS))
+        offset = {d: [] for d in SCAN_OFFSETS}
         for path in picks:
             xyz, labels, ref = _frame(root, seq, path)
             for name, (T, dist) in chains.items():
@@ -77,10 +94,18 @@ def calibration_check(root, sequences, frames_per_seq: int = 8, seed: int = 0, p
                 scores[name].append(_agree(u, v, labels[rows], ref))
                 if name.startswith("chosen"):
                     shift += [_agree(u, v, labels[rows], ref, dv) for dv in SHIFTS]
+            T = camera_from_lidar(root, seq)
+            for d in SCAN_OFFSETS:
+                scan = _scan(root, seq, int(path.name[5:11]) + d)
+                if scan is not None:
+                    u, v, rows = project(scan[0], T, K)
+                    offset[d].append(_agree(u, v, scan[1][rows], ref))
             if png_dir is not None:
                 overlay_points(root, seq, path, xyz, labels, Path(png_dir) / f"calib_{seq}_{path.stem}.png")
         report[seq] = {name: float(np.nanmean(s)) for name, s in scores.items()}
         report[seq]["chosen, vertical shift dv (px) -> agreement"] = dict(zip(SHIFTS, np.round(shift / len(picks), 4).tolist()))
+        report[seq]["chosen, scan i+d on image i: d -> agreement"] = {
+            d: round(float(np.nanmean(a)), 4) for d, a in offset.items() if a}
     return report
 
 

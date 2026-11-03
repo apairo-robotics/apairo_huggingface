@@ -3,6 +3,7 @@
     apairo-rellis calib-check --root /data/rellis --png-dir /tmp/calib              # verify the calibration first
     apairo-rellis process --root /data/rellis --out ~/data/rellis_derived            # every sequence
     apairo-rellis process --root /data/rellis --out ~/data/rellis_derived 00003      # one sequence
+    apairo-rellis coverage --out ~/data/rellis_derived                               # the card's coverage table
     apairo-rellis agreement --root /data/rellis --out ~/data/rellis_derived          # vs official 2D labels
     apairo-rellis overlay ~/data/rellis_derived/00003 --every 500 --png-dir /tmp/ov
     apairo-rellis export ~/data/rellis_derived 00003 --root /data/rellis --lerobot-root ~/data/rellis_lerobot
@@ -32,6 +33,25 @@ def cmd_process(args) -> None:
         report = label_sequence(args.root, seq, out, overwrite=args.overwrite, limit=args.limit)
         if report:
             (out / seq / "apairo_rellis_report.json").write_text(json.dumps(report, indent=2))
+
+
+def cmd_coverage(args) -> None:
+    from .labeling import coverage
+
+    out = Path(args.out)
+    print("| seq | images | sem_mask pixels with data | frames with a trav mask "
+          "| trav pixels with data | driven pixels |")
+    print("|---|---|---|---|---|---|")
+    for seq in args.sequences or config.SEQUENCES:
+        if not (out / seq / config.TRAV_MASK).is_dir():
+            continue
+        c = coverage(out / seq)
+        report_path = out / seq / "apairo_rellis_report.json"
+        report = json.loads(report_path.read_text()) if report_path.exists() else {"sequence": seq}
+        report_path.write_text(json.dumps({**report, **c}, indent=2))
+        print(f"| {seq} | {c['images']} | {100 * c['sem_mask_pixel_coverage_mean']:.1f} % "
+              f"| {c['trav_mask_frames_with_data']} | {100 * c['trav_mask_pixel_coverage_mean']:.1f} % "
+              f"| {100 * c['trav_mask_driven_fraction_mean']:.1f} % |")
 
 
 def cmd_calib_check(args) -> None:
@@ -98,9 +118,14 @@ def main(argv=None) -> None:
     p = sub.add_parser("calib-check", help="score calibration chains against the 2D labels, write overlays")
     p.add_argument("sequences", nargs="*")
     p.add_argument("--root", required=True)
-    p.add_argument("--frames", type=int, default=8, help="annotated frames per sequence")
+    p.add_argument("--frames", type=int, default=40, help="annotated frames per sequence")
     p.add_argument("--png-dir", help="write point overlays here")
     p.set_defaults(func=cmd_calib_check)
+
+    p = sub.add_parser("coverage", help="mask coverage per sequence, from the written masks")
+    p.add_argument("sequences", nargs="*")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_coverage)
 
     p = sub.add_parser("agreement", help="IoU / agreement vs the official 2D annotations")
     p.add_argument("sequences", nargs="*")
