@@ -3,8 +3,8 @@
 The grid (cells, extent, frame) is the shared one of
 :mod:`apairo_huggingface.bev_grid`; the accumulation and the driven corridor
 use the same numbers as the RELLIS recipe. Only what the rig imposes differs:
-the channel names, the heading axis (+x of the vehicle frame), the lidar
-height and the vehicle width.
+the channel names, the heading axis (+x of the vehicle frame), the up axis
+(gravity from the INS attitude), the lidar height and the vehicle width.
 """
 
 from __future__ import annotations
@@ -15,8 +15,10 @@ from .. import config as tartan
 CAMERA = tartan.CAMERA        # image_left_color: 1024x544 rectified RGB, ~10 Hz
 LIDAR = "velodyne_0"          # (N, 3) float32 x y z in the vehicle frame (x forward, z up), 10 Hz
 POSES = tartan.POSES          # gicp_poses: (4, 4) T_world_vehicle per scan, on the lidar clock
+POSE_VALID = "gicp_valid"     # gicp_poses/valid_mask.npy: (N,) bool per pose, on the lidar clock
+ATTITUDE = tartan.STATE       # gps_odom: Novatel INS rows, [x y z qx qy qz qw (local level <- vehicle), twist], 50 Hz
 ACTION = tartan.ACTION        # cmd: [linear_velocity, angular_velocity] command
-SOURCE_DIRS = [CAMERA, LIDAR, POSES, ACTION]
+SOURCE_DIRS = [CAMERA, LIDAR, POSES, ATTITUDE, ACTION]
 
 # Derived channels written in the view.
 BEV_ELEVATION = "bev_elevation"  # (3, H, W) float16: min / max / mean height, NaN unknown
@@ -32,8 +34,14 @@ MIN_RANGE = 2.0               # m; drops the roof and sensor mounts (all within 
 ROBOT_HALF_WIDTH = tartan.ROBOT_HALF_WIDTH   # 0.8 m: Yamaha Viking, 1.57 m wide
 ROBOT_HALF_LENGTH = 1.5       # m, for drawing only (the Viking is ~3 m long)
 
+# Up. The GICP world is the first scan's vehicle frame and its z drifts
+# (1-20 deg from gravity at the median scan of a recording, 26 deg at worst),
+# so the grid's up is gravity from the INS attitude at the scan instead.
+# A scan with no INS row within ATTITUDE_TOLERANCE is treated as an invalid pose.
+ATTITUDE_TOLERANCE = 0.1      # s; gps_odom is 50 Hz
+
 # Recipe: identical to the RELLIS BEV grids.
-BEV_ACCUMULATE = 10           # scans per grid, past only: j, j - 2, ..., j - 18 (~2 s)
+BEV_ACCUMULATE = 10           # scans per grid, past only: j, j - 2, ..., j - 18 (1.8 s)
 BEV_STRIDE = 2
 BEV_PATH_BACK = 10.0          # m of path behind the scan in the driven corridor
 FORWARD_DISTANCE = 30.0       # m of path ahead (the grid reaches 30 m ahead)

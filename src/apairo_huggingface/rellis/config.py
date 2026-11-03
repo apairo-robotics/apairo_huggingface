@@ -81,8 +81,8 @@ BEV_Y_MIN, BEV_Y_MAX = bev_grid.Y_MIN, bev_grid.Y_MAX   # -20 / 20 m, right / le
 # Heights are stored relative to the ground under the robot: z_lidar + LIDAR_HEIGHT.
 # Accumulation: the current scan plus the BEV_ACCUMULATE - 1 previous scans taken
 # every BEV_STRIDE scans (past only, never future: the grid at scan j uses scans
-# <= j), placed with poses.txt. 10 scans, stride 2 = the last ~2 s, ~2.6 m of
-# motion at the median 1.3 m/s.
+# <= j), placed with poses.txt. 10 scans, stride 2 = the last 1.8 s at 10 Hz,
+# ~2.3 m of motion at the median 1.3 m/s.
 BEV_ACCUMULATE = 10
 BEV_STRIDE = 2
 # Driven corridor: the robot's footprint (ROBOT_HALF_WIDTH either side of the

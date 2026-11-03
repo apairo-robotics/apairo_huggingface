@@ -25,8 +25,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.spatial.transform import Rotation
 
+from ..poses import executed_actions, relative_states
 from . import config
 from .labeling import load_poses, open_view
 
@@ -76,8 +76,7 @@ def frames(root, view, splits, limit: int | None = None):
     camera_files = ds.loaders[config.CAMERA].files
     stamps = np.asarray(ds.timestamps[config.CAMERA], dtype=np.float64)
     poses = load_poses(root, seq) @ LIDAR_FROM_ROBOT       # T_world_robot, one per scan = per image
-    origin = np.linalg.inv(poses[0])
-    yaw = np.unwrap(np.arctan2(poses[:, 1, 0], poses[:, 0, 0]))
+    states, actions = relative_states(poses), executed_actions(poses, stamps)
     n = len(sync) if limit is None else min(limit, len(sync))
     for k in range(n):
         sample = sync[k]
@@ -89,19 +88,14 @@ def frames(root, view, splits, limit: int | None = None):
             label_2d, has_2d = np.asarray(Image.open(ref_path)), 1
         else:
             label_2d, has_2d = np.full((image.height, image.width), config.NO_DATA, np.uint8), 0
-        a = min(k, len(poses) - 2)                          # forward difference k -> k+1
-        dt = stamps[a + 1] - stamps[a]
-        step = np.linalg.inv(poses[a]) @ poses[a + 1]
-        pose = origin @ poses[k]
         yield {
             "observation.images.front": np.asarray(image.resize(size, Image.BILINEAR)),
             "observation.semantic_mask": _mask3(np.asarray(sample.data[config.SEM_MASK]), size),
             "observation.traversability_mask": _mask3(np.asarray(sample.data[config.TRAV_MASK]), size),
             "observation.label_2d": _mask3(label_2d, size),
-            "observation.state": np.concatenate(
-                [pose[:3, 3], Rotation.from_matrix(pose[:3, :3]).as_quat()]).astype(np.float32),
+            "observation.state": states[k],
             "observation.frame_info": np.array([splits[(seq, k)], k, has_2d], dtype=np.int64),
-            "action": np.array([step[0, 3] / dt, (yaw[a + 1] - yaw[a]) / dt], dtype=np.float32),
+            "action": actions[k],
             "task": TASK,
         }
 

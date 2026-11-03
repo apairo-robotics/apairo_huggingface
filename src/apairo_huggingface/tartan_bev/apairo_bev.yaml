@@ -15,6 +15,14 @@ channels:
     loader: npy
     array_file: poses.npy
     timestamps_from: velodyne_0
+  gicp_valid:         # valid_mask.npy (N,) bool, one per pose, beside poses.npy
+    loader: npy
+    directory: gicp_poses
+    array_file: valid_mask.npy
+    timestamps_from: velodyne_0
+  gps_odom:           # odometry.npy (M, 13) Novatel INS: position, orientation (qx qy qz qw), twist; 50 Hz
+    loader: npy
+    array_file: odometry.npy
   cmd:                # twist.npy (N, 2) [linear_velocity, angular_velocity] command
     loader: npy
     array_file: twist.npy

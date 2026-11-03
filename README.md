@@ -214,10 +214,10 @@ Design choices (all in `rellis/config.py`, "BEV grids"):
 - **Heights** are lidar z + 1.0 m (the measured lidar height), so the ground
   under the robot reads ~0.
 - **Accumulation, past only**: the grid of scan j uses scans j, j-2, ..., j-18
-  (10 scans, ~2 s, ~2.6 m at the median 1.3 m/s), placed with `poses.txt`.
+  (10 scans spanning 1.8 s at 10 Hz, ~2.3 m at the median 1.3 m/s), placed with `poses.txt`.
   Nothing later than j enters the inputs (a test rewrites the future scans and
   checks the grid does not move). Moving objects (people walking beside the
-  robot) smear over those 2 s.
+  robot) smear over those 1.8 s.
 - **Self-returns**: points within 2 m, and a sensor-frame box 0-3 m behind the
   lidar (robot-attached returns, mostly labelled void, present in most scans)
   are dropped. The lowest Ouster beam meets the ground ~3.4 m out, so a disc
@@ -280,14 +280,26 @@ on a climb the ground ahead reads up to +1.3 m.
 
 `apairo_huggingface.tartan_bev` runs the RELLIS BEV recipe on TartanDrive
 2.0, to show an apairo recipe is portable across datasets. The grid, its
-frame, the binning, the elevation layer, the past-only accumulation and the
-driven corridor live in one shared module, `apairo_huggingface/bev_grid.py`,
-used unchanged by `rellis/bev.py` and `tartan_bev/bev.py` (the RELLIS grids
-are bit-identical before and after the factoring). What the port changes:
+frame, the binning, the elevation layer, the past-only accumulation, the
+driven corridor and the preprocessor's shared machinery (`BevGridBase`:
+recipe scalars incl. grid resolution and bounds, path length, scan cache)
+live in one shared module, `apairo_huggingface/bev_grid.py`; state and
+action from poses live in `apairo_huggingface/poses.py`, used by the three
+exports. The RELLIS grids, recipe hash, states and actions are bit-identical
+before and after the factoring. What the port changes:
 
-- the **declaration** (`tartan_bev/apairo_bev.yaml`): four raw channels of a
-  recording (`velodyne_0`, `gicp_poses` declared on the lidar clock,
-  `image_left_color`, `cmd`), read through a symlink view;
+- the **declaration** (`tartan_bev/apairo_bev.yaml`): the raw channels of a
+  recording (`velodyne_0`; `gicp_poses` and its `valid_mask.npy` as
+  `gicp_valid`, both on the lidar clock; `gps_odom`, the INS;
+  `image_left_color`; `cmd`), read through a symlink view;
+- the **up axis**: gravity from the INS attitude at each scan, not the GICP
+  world z, which is the first scan's vehicle frame and drifts from gravity
+  by 1-20 deg (median per recording, 26 deg at worst). Against GPS altitude,
+  the height of the ground 15-25 m ahead is off by 0.14-0.30 m (median per
+  recording) where GICP's z gave 0.33-4.70 m;
+- **invalid scans** (pose flagged in `valid_mask.npy`, or no INS row within
+  0.1 s; 13 scans) get all-unknown grids, enter no other grid nor the driven
+  corridor, and are not exported;
 - the **rig numbers**: heading = vehicle +x, lidar 1.77 m above the ground,
   footprint +-0.8 m, a 2 m radius for the self-returns;
 - the **semantic layer**, which TartanDrive cannot have (no point labels), is
@@ -299,14 +311,14 @@ are bit-identical before and after the factoring). What the port changes:
 
 Processed: 13 of the 55 recordings with scans (`tartan_bev/config.SEQUENCES`:
 every site, both seasons), 27,561 scans, 10.7 km of path. Over the 26,038
-frames with a trav grid, cells are 3.9% driven / 38.8% seen / 57.3% unknown;
-48% of driven cells hold a point. **80% of the observed driven cells are flat
-against 35% of the seen-not-driven cells** (2.3x; 1.4-4.1x per recording;
+frames with a trav grid, cells are 3.9% driven / 38.9% seen / 57.2% unknown;
+48% of driven cells hold a point. **81% of the observed driven cells are flat
+against 35% of the seen-not-driven cells** (2.3x; 1.4-4.0x per recording;
 lowest on the vegetated meadows / figure_8 / slag heap recordings, where the
 Viking drives through brush that reads rough). Full table in the card.
 
 Processing: 0.04 s per scan alone, ~0.1 s with three recordings in parallel
-on the shared HDD (~15 min for the 13), 185 MB peak RSS per process; 12 GB of
+on the shared HDD (~13 min for the 13), 190 MB peak RSS per process; 12 GB of
 grids (npy: 240 KB elevation + 160 KB geometry + 40 KB trav per scan). The
 full release (~125.7k scans) would take ~55 GB of grids.
 
@@ -317,11 +329,11 @@ by their pose, the export keeps the first. The `cmd` channel's linear part is
 action of the published tartandrive_offroad, so the BEV export's `action` is the executed speed and yaw rate from the poses, as
 in the RELLIS BEV export, with `cmd` kept as `observation.command`.
 
-Export (`apairo-tartan-bev export`, then `check`): 34 episodes / 27,148
-frames (the 413 repeats dropped, nothing dropped by the 0.1 s camera / cmd
+Export (`apairo-tartan-bev export`, then `check`): 34 episodes / 27,135
+frames (the 413 repeats and 13 invalid scans dropped, nothing dropped by the 0.1 s camera / cmd
 tolerance), recordings cut into equal episodes of at most 1000 frames because
-LeRobot holds an episode's float grids in memory: 8.7 GB peak RSS, 31 min,
-5.8 GB (5.3 GB parquet, 505 MB video); the full release would add ~26 GB.
+LeRobot holds an episode's float grids in memory: 9.0 GB peak RSS, 21 min,
+5.8 GB (5.3 GB parquet, 504 MB video); the full release would add ~26 GB.
 Reload check: trav values {0, 1, 255}, elevation known share 0.40, forward
 speed p50 3.75 m/s.
 

@@ -20,15 +20,23 @@ def _rot_z(deg):
 
 # ------------------------------------------------------------------ geometry
 
-def test_bev_frame_is_the_vehicle_x_on_the_ground_plane():
+def test_level_frame_is_up_with_the_heading_levelled():
     pitch = np.array([[np.cos(0.17), 0, np.sin(0.17)], [0, 1, 0], [-np.sin(0.17), 0, np.cos(0.17)]])
     T = np.eye(4)
     T[:3, :3] = _rot_z(30) @ pitch
     T[:3, 3] = [5.0, -2.0, 3.0]
-    B = bev.world_from_bev(T)
+    B = bev_grid.level_frame(T, T[:3, 0], np.array([0.0, 0.0, 2.0]))
+    np.testing.assert_allclose(B[:3, :3] @ B[:3, :3].T, np.eye(3), atol=1e-12)
     np.testing.assert_allclose(B[:3, 2], [0, 0, 1], atol=1e-12)
     np.testing.assert_allclose(B[:3, 0], [np.cos(np.radians(30)), np.sin(np.radians(30)), 0], atol=1e-12)
     np.testing.assert_allclose(B[:3, 3], T[:3, 3])
+    # With up = world z it is the RELLIS frame.
+    np.testing.assert_allclose(B, bev_grid.world_from_heading(T, T[:3, 0]), atol=1e-12)
+    # Up need not be world z: the frame follows it.
+    up = pitch @ [0.0, 0.0, 1.0]
+    B = bev_grid.level_frame(T, np.array([1.0, 0.0, 0.0]), up)
+    np.testing.assert_allclose(B[:3, 2], up, atol=1e-12)
+    assert abs(B[:3, 0] @ up) < 1e-12 and np.linalg.det(B[:3, :3]) > 0
 
 
 def test_geometry_roughness_step_and_nan_unknown():
@@ -62,19 +70,26 @@ def _ground_scan(rng, n=4000):
     return np.column_stack([r * np.cos(a), r * np.sin(a), np.full(n, -config.LIDAR_HEIGHT)]).astype(np.float32)
 
 
-def _synthetic_root(tmp_path):
-    # The vehicle drives along world +y (its +x) at 2 m per scan.
+def _synthetic_root(tmp_path, tilt_deg=0.0, invalid=(), attitude_gap=None):
+    # The vehicle drives along world +y (its +x) at 2 m per scan on level
+    # ground. ``tilt_deg`` tilts the GICP world about its x (as GICP's drifting
+    # z does: the poses tilt, the scans and the INS attitude do not);
+    # ``invalid`` scans are False in valid_mask.npy; ``attitude_gap`` = scan
+    # index whose stamp gps_odom has no row within 0.15 s of.
     seq = tmp_path / "tartan" / "rec"
     for name in config.SOURCE_DIRS:
         (seq / name).mkdir(parents=True)
     rng = np.random.default_rng(1)
+    c, s = np.cos(np.radians(tilt_deg)), np.sin(np.radians(tilt_deg))
+    tilt = np.eye(4)
+    tilt[1:3, 1:3] = [[c, -s], [s, c]]
     poses, stamps = [], []
     for k in range(N_SCANS):
         j = k - 1 if k == DUP else k
         T = np.eye(4)
         T[:3, :3] = _rot_z(90.0)
         T[:3, 3] = [0.0, 2.0 * j + (0.001 if k == DUP else 0.0), 0.0]
-        poses.append(T)
+        poses.append(tilt @ T)
         stamps.append(T0 + 0.1 * j)
         scan = np.load(seq / config.LIDAR / f"{j:06d}.npy") if k == DUP else _ground_scan(rng)
         np.save(seq / config.LIDAR / f"{k:06d}.npy", scan)
@@ -83,7 +98,17 @@ def _synthetic_root(tmp_path):
     for name in (config.LIDAR, config.POSES, config.CAMERA):
         np.savetxt(seq / name / "timestamps.txt", np.array(stamps) + (0.003 if name == config.CAMERA else 0.0))
     np.save(seq / config.POSES / "poses.npy", np.stack(poses))
-    np.save(seq / config.POSES / "valid_mask.npy", np.ones(N_SCANS, bool))
+    valid = np.ones(N_SCANS, bool)
+    valid[list(invalid)] = False
+    np.save(seq / config.POSES / "valid_mask.npy", valid)
+    # INS at 50 Hz: heading 90 deg, level (qx qy qz qw at columns 3:7).
+    t = np.arange(stamps[0] - 0.5, stamps[-1] + 0.5, 0.02)
+    if attitude_gap is not None:
+        t = t[np.abs(t - stamps[attitude_gap]) > 0.15]
+    rows = np.zeros((len(t), 13))
+    rows[:, 3:7] = [0.0, 0.0, np.sin(np.pi / 4), np.cos(np.pi / 4)]
+    np.save(seq / config.ATTITUDE / "odometry.npy", rows)
+    np.savetxt(seq / config.ATTITUDE / "timestamps.txt", t)
     np.save(seq / config.ACTION / "twist.npy", np.column_stack([np.zeros(N_SCANS), np.linspace(-1, 1, N_SCANS)]))
     np.savetxt(seq / config.ACTION / "timestamps.txt", np.array(stamps) + 0.01)
     return tmp_path / "tartan", seq
@@ -100,6 +125,10 @@ def test_view_writes_nothing_in_the_source(tmp_path):
     assert all(len(ds.timestamps[k]) == N_SCANS for k in ds.timestamps)
     assert np.asarray(ds.loaders[config.LIDAR][0]).shape == (4000, 3)   # not the intensity file
     assert np.asarray(ds.loaders[config.POSES][0]).shape == (4, 4)       # poses.npy, not valid_mask.npy
+    ds = bev.open_view(view)
+    assert np.asarray(ds.loaders[config.POSE_VALID][0]).shape == ()      # valid_mask.npy, one bool per scan
+    assert len(ds.timestamps[config.POSE_VALID]) == N_SCANS
+    assert bev.valid_scans(ds).all()
 
 
 def test_process_writes_three_registered_channels(tmp_path, monkeypatch):
@@ -153,6 +182,70 @@ def test_accumulation_is_past_only(tmp_path):
     assert not np.array_equal(np.nan_to_num(before[config.BEV_ELEVATION]), np.nan_to_num(moved[config.BEV_ELEVATION]))
 
 
+def _grid_of(view, j, **kwargs):
+    ds = bev.open_view(view)
+    g = bev.BevGrids(ds, **kwargs)
+    return g, g(Sample(data={k: ds.loaders[k][j] for k in bev.INPUT_KEYS},
+                       timestamp=float(ds.timestamps[config.LIDAR][j])))
+
+
+def test_grids_are_levelled_by_the_ins_not_the_gicp_world(tmp_path):
+    # GICP's world z drifts from gravity (up to 26 deg on the real recordings).
+    # A world tilted by 10 deg must not tilt the grid: level ground reads 0 at
+    # 25 m ahead, where the GICP z would put it 25 * tan(10 deg) = 4.4 m off.
+    root, _ = _synthetic_root(tmp_path, tilt_deg=10.0)
+    _, out = _grid_of(bev.make_view(root, "rec", tmp_path / "out"), 6)
+    mean = out[config.BEV_ELEVATION][2].astype(float)
+    known = np.isfinite(mean)
+    assert known.sum() > 5000
+    assert np.abs(mean[known]).max() < 0.02
+    assert np.nanmax(out[config.BEV_GEOMETRY].astype(float)) < 0.02
+
+
+def test_invalid_poses_enter_no_grid(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MIN_FUTURE_PATH", 4.0)
+    bad = 5
+    root, _ = _synthetic_root(tmp_path, invalid=[bad])
+    view = bev.make_view(root, "rec", tmp_path / "out")
+    g, out = _grid_of(view, bad)
+    assert np.isnan(out[config.BEV_ELEVATION].astype(float)).all()
+    assert np.isnan(out[config.BEV_GEOMETRY].astype(float)).all()
+    assert (out[config.BEV_TRAV] == 255).all()
+    assert g.scans_used(6) == [6, 4, 2, 0] and bad not in g.scans_used(7)
+    # The path skips the invalid pose: move it far away, nothing changes.
+    poses = np.load(root / "rec" / config.POSES / "poses.npy")
+    _, before = _grid_of(view, 6, stride=1)
+    poses[bad, :3, 3] = [500.0, -300.0, 40.0]
+    np.save(root / "rec" / config.POSES / "poses.npy", poses)
+    g, after = _grid_of(view, 6, stride=1)
+    for key in bev.OUTPUT_KEYS:
+        np.testing.assert_array_equal(np.nan_to_num(before[key]), np.nan_to_num(after[key]))
+    assert abs(g._path[-1] - 18.0) < 1e-2               # 0 -> 18 m along y, not via (500, -300)
+
+
+def test_scans_without_ins_attitude_are_invalid(tmp_path):
+    root, _ = _synthetic_root(tmp_path, attitude_gap=6)
+    ds = bev.open_view(bev.make_view(root, "rec", tmp_path / "out"))
+    up, has = bev.scan_up(ds)
+    assert has.tolist() == [k != 6 for k in range(N_SCANS)]
+    np.testing.assert_allclose(up, np.tile([0.0, 0.0, 1.0], (N_SCANS, 1)), atol=1e-12)
+    assert bev.valid_scans(ds).tolist() == has.tolist()
+
+
+def test_grid_resolution_and_bounds_are_in_the_recipe(tmp_path, monkeypatch):
+    from apairo.preprocess.runner import _recipe_key
+
+    root, _ = _synthetic_root(tmp_path)
+    ds = bev.open_view(bev.make_view(root, "rec", tmp_path / "out"))
+    key = _recipe_key(bev.BevGrids(ds), "npys")
+    assert _recipe_key(bev.BevGrids(ds), "npys") == key
+    monkeypatch.setattr(bev_grid, "RESOLUTION", 0.25)
+    assert _recipe_key(bev.BevGrids(ds), "npys") != key
+    monkeypatch.setattr(bev_grid, "RESOLUTION", 0.2)
+    monkeypatch.setattr(bev_grid, "X_MAX", 40.0)
+    assert _recipe_key(bev.BevGrids(ds), "npys") != key
+
+
 def test_export_reloads_the_grids_unchanged(tmp_path, monkeypatch):
     import json
 
@@ -183,7 +276,10 @@ def test_export_reloads_the_grids_unchanged(tmp_path, monkeypatch):
     np.testing.assert_array_equal(np.round(item["observation.bev.trav"][0].numpy() * 255).astype(np.uint8),
                                   ds.loaders[config.BEV_TRAV][DUP + 1])
     np.testing.assert_allclose(item["action"].numpy(), [20.0, 0.0], atol=1e-3)   # 2 m per 0.1 s, straight
-    np.testing.assert_allclose(item["observation.state"].numpy()[:3], [2.0 * (DUP + 1), 0, 0], atol=1e-3)
+    # The state is relative to the episode's first frame: frames 0, 3 and 6
+    # start episodes 0, 1 and 2 at the identity, 2 m per frame after that.
+    for f, x in [(0, 0.0), (1, 2.0), (2, 4.0), (DUP, 0.0), (DUP + 1, 2.0), (6, 0.0), (8, 4.0)]:
+        np.testing.assert_allclose(data[f]["observation.state"].numpy(), [x, 0, 0, 0, 0, 0, 1], atol=1e-3)
 
 
 # --------------------------------------------------- real data, if present
@@ -202,16 +298,26 @@ def test_bev_left_is_image_left_on_real_frames(tmp_path):
     k = 800
     p = np.asarray(ds.loaders[config.LIDAR][k]).astype(float)
     pose = np.asarray(ds.loaders[config.POSES][k])
-    b = bev_grid.transform(np.linalg.inv(bev.world_from_bev(pose)), bev_grid.transform(pose, p))
+    g = bev.BevGrids(ds)
+    b = bev_grid.transform(np.linalg.inv(g.world_from_bev(k)), bev_grid.transform(pose, p))
     c = bev_grid.transform(T_OPTICAL_FROM_VELODYNE, p)
     front = (c[:, 2] > 1) & (b[:, 0] > 3)
     u = CAMERA.K[0, 0] * c[front, 0] / c[front, 2] + CAMERA.K[0, 2]
     assert (u[b[front, 1] > 1] < CAMERA.K[0, 2]).mean() > 0.99
     assert (u[b[front, 1] < -1] > CAMERA.K[0, 2]).mean() > 0.99
-    g = bev.BevGrids(ds)
     out = g(Sample(data={key: ds.loaders[key][k] for key in bev.INPUT_KEYS},
                    timestamp=float(ds.timestamps[config.LIDAR][k])))
     assert set(np.unique(out[config.BEV_TRAV])) == {0, 1, 255}
     # The ground the vehicle drives on: flat in the near corridor.
     near = out[config.BEV_TRAV] == 1
     assert np.nanmedian(out[config.BEV_GEOMETRY][0][near].astype(float)) < config.FLAT_ROUGHNESS
+
+
+def test_export_drops_invalid_scans(tmp_path, monkeypatch):
+    from apairo_huggingface.tartan_bev.export import frames
+
+    monkeypatch.setattr(config, "MIN_FUTURE_PATH", 4.0)
+    root, _ = _synthetic_root(tmp_path, invalid=[5])
+    bev.process_sequence(root, "rec", tmp_path / "out")
+    scans = [int(f["observation.frame_info"][1]) for f in frames(tmp_path / "out" / "rec")]
+    assert scans == [0, 1, 3, 4, 6, 7, 8, 9]               # one of the repeat 2 / 3, and 5 is invalid

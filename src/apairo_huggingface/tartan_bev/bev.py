@@ -19,14 +19,19 @@ centred on that scan's pose:
                      but not driven, 255 unknown.
 
 What the port changes, and nothing else: the declaration (``apairo_bev.yaml``:
-four raw TartanDrive channels, the GICP poses on the lidar clock), the heading
-(vehicle +x, where RELLIS's is the Ouster's -x), the lidar height (1.77 m),
-the vehicle width, the self-return filter (a 2 m radius covers the roof) and
-the semantic layer swapped for the geometric one.
+five raw TartanDrive channels, the GICP poses and their validity mask on the
+lidar clock), the heading (vehicle +x, where RELLIS's is the Ouster's -x),
+the up axis (gravity from the INS attitude at the scan, where RELLIS uses its
+poses' world z: the GICP world is the first scan's vehicle frame and its z
+drifts by up to 26 deg), the lidar height (1.77 m), the vehicle width, the
+self-return filter (a 2 m radius covers the roof) and the semantic layer
+swapped for the geometric one. Scans whose GICP pose is flagged invalid, or
+with no INS attitude within ``ATTITUDE_TOLERANCE``, get all-unknown grids and
+enter no other grid nor the driven corridor.
 
 Pipeline, per recording:
 
-1. ``make_view``     a symlink view under ``out_root/<seq>`` of the four
+1. ``make_view``     a symlink view under ``out_root/<seq>`` of the five
                      source channels; apairo writes its registry and the
                      derived channels there, never in the shared source tree.
 2. ``BevGrids``      an apairo ``FramePreprocessor`` with three
@@ -44,22 +49,21 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections import OrderedDict
 from importlib import resources
 from pathlib import Path
 
 import numpy as np
 from apairo import RawDataset
-from apairo.core.preprocessor import FramePreprocessor
+from scipy.spatial.transform import Rotation
 from apairo.core.sample import Sample
 
-from ..bev_grid import (cell_centres, cell_index, driven_window, elevation, footprint, grid_shape, scans_used,
-                        trav_grid, transform, world_from_heading)
+from ..bev_grid import BevGridBase, cell_index, elevation, grid_shape, level_frame, trav_grid, transform
 from . import config
 
 logger = logging.getLogger(__name__)
 
-INPUT_KEYS = [config.LIDAR, config.POSES]
+INPUT_KEYS = [config.LIDAR, config.POSES]                          # zipped per scan by the runner
+VIEW_KEYS = INPUT_KEYS + [config.POSE_VALID, config.ATTITUDE]      # all that BevGrids reads
 OUTPUT_KEYS = [config.BEV_ELEVATION, config.BEV_GEOMETRY, config.BEV_TRAV]
 GEOMETRY_NAMES = ["roughness", "step"]
 
@@ -83,13 +87,36 @@ def make_view(root, seq: str, out_root) -> Path:
     return view
 
 
-def open_view(view, keys=INPUT_KEYS) -> RawDataset:
+def open_view(view, keys=VIEW_KEYS) -> RawDataset:
     return RawDataset(view, declare=declaration(), keys=list(keys))
 
 
-def world_from_bev(T_world_vehicle: np.ndarray) -> np.ndarray:
-    """``(4, 4)`` T_world_bev: the lidar origin, world z up, x = the vehicle's +x on the ground plane."""
-    return world_from_heading(T_world_vehicle, T_world_vehicle[:3, 0])
+def scan_poses(dataset: RawDataset) -> np.ndarray:
+    """``(N, 4, 4)`` GICP T_world_vehicle, one per scan."""
+    loader = dataset.loaders[config.POSES]
+    return np.stack([np.asarray(loader[i], dtype=np.float64) for i in range(len(loader))])
+
+
+def scan_up(dataset: RawDataset) -> tuple[np.ndarray, np.ndarray]:
+    """``(N, 3)`` gravity up in the vehicle frame of every scan, from the INS
+    attitude row nearest the scan, and ``(N,)`` bool: whether that row is
+    within ``config.ATTITUDE_TOLERANCE``. Rows hold ``qx qy qz qw`` of the
+    vehicle in a local level frame, so up in the vehicle frame is R^T e_z."""
+    loader = dataset.loaders[config.ATTITUDE]
+    rows = np.stack([np.asarray(loader[i], dtype=np.float64) for i in range(len(loader))])
+    times = np.asarray(dataset.timestamps[config.ATTITUDE], dtype=np.float64)
+    stamps = np.asarray(dataset.timestamps[config.POSES], dtype=np.float64)   # the scan clock
+    i = np.clip(np.searchsorted(times, stamps), 1, len(times) - 1)
+    i = np.where(np.abs(times[i - 1] - stamps) <= np.abs(times[i] - stamps), i - 1, i)
+    up = Rotation.from_quat(rows[i, 3:7]).inv().apply([0.0, 0.0, 1.0])
+    return up, np.abs(times[i] - stamps) <= config.ATTITUDE_TOLERANCE
+
+
+def valid_scans(dataset: RawDataset) -> np.ndarray:
+    """``(N,)`` bool: the scans with a valid GICP pose (``valid_mask.npy``) and an INS attitude."""
+    loader = dataset.loaders[config.POSE_VALID]
+    valid = np.array([bool(loader[i]) for i in range(len(loader))])
+    return valid & scan_up(dataset)[1]
 
 
 # -------------------------------------------------------------------- layers
@@ -117,45 +144,36 @@ def geometry(cells: np.ndarray, heights: np.ndarray, mean_height: np.ndarray) ->
 
 # -------------------------------------------------------------- preprocessor
 
-class BevGrids(FramePreprocessor):
-    """One robot-centred elevation / geometry / trav grid per scan.
+class BevGrids(BevGridBase):
+    """One robot-centred elevation / geometry / trav grid per scan (shared
+    machinery: :class:`~apairo_huggingface.bev_grid.BevGridBase`).
 
-    Frame-wise for the runner, but a grid needs the trajectory (the footprint,
-    the past scans' placement) and the past scans themselves: those are read
-    from the view's loaders by scan index, located by the sample's stamp, so
-    the output never depends on the order frames are asked in. Placed past
-    scans are cached, so an in-order run reads each scan once.
+    The grid of scan ``j`` is levelled by the INS gravity at ``j``; past scans
+    and the driven path are placed relative to ``j`` by the GICP poses (exact
+    over the few metres and seconds a grid spans, where the GICP world's own z
+    is not). A scan without a valid pose or attitude gets all-unknown grids
+    and never enters another scan's grid.
     """
 
     output_keys = OUTPUT_KEYS
-    output_loader = "npys"
     input_keys = INPUT_KEYS
     timestamps_from = config.LIDAR
-    sources = INPUT_KEYS
+    sources = VIEW_KEYS
 
     def __init__(self, dataset: RawDataset, *, accumulate: int = config.BEV_ACCUMULATE,
                  stride: int = config.BEV_STRIDE) -> None:
-        # Public scalars enter the recipe hash (run_preprocess(reuse=True)).
-        self.accumulate = int(accumulate)
-        self.stride = int(stride)
-        self.lidar_height = config.LIDAR_HEIGHT
-        self.min_range = config.MIN_RANGE
-        self.half_width = config.ROBOT_HALF_WIDTH
-        self.path_back = config.BEV_PATH_BACK
-        self.path_forward = config.FORWARD_DISTANCE
-        self.min_future_path = config.MIN_FUTURE_PATH
+        super().__init__(scan_poses(dataset), np.asarray(dataset.timestamps[config.LIDAR], dtype=np.float64),
+                         valid=valid_scans(dataset), accumulate=accumulate, stride=stride,
+                         lidar_height=config.LIDAR_HEIGHT, min_range=config.MIN_RANGE,
+                         half_width=config.ROBOT_HALF_WIDTH, path_back=config.BEV_PATH_BACK,
+                         path_forward=config.FORWARD_DISTANCE, min_future_path=config.MIN_FUTURE_PATH)
+        self.up = "ins_gravity"
+        self.attitude_tolerance = config.ATTITUDE_TOLERANCE
         self.min_cell_points = config.MIN_CELL_POINTS
-
+        self._up = scan_up(dataset)[0]
         self._lidar = dataset.loaders[config.LIDAR]
-        poses_loader = dataset.loaders[config.POSES]
-        self._poses = np.stack([np.asarray(poses_loader[i], dtype=np.float64) for i in range(len(poses_loader))])
-        self._stamps = np.asarray(dataset.timestamps[config.LIDAR], dtype=np.float64)
-        if len(self._poses) != len(self._stamps) or len(self._lidar) != len(self._stamps):
-            raise ValueError(f"{len(self._poses)} poses, {len(self._lidar)} scans, {len(self._stamps)} stamps")
-        steps = np.linalg.norm(np.diff(self._poses[:, :3, 3], axis=0), axis=1)
-        self._path = np.concatenate([[0.0], np.cumsum(steps)])
-        self._centres = cell_centres()
-        self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        if len(self._lidar) != len(self._stamps):
+            raise ValueError(f"{len(self._lidar)} scans for {len(self._stamps)} stamps")
 
     def index_of(self, stamp: float, pose: np.ndarray) -> int:
         """The scan at ``stamp``. TartanDrive repeats some scans under the same
@@ -166,31 +184,29 @@ class BevGrids(FramePreprocessor):
                 return int(j)
         raise ValueError(f"no scan with this pose at t={stamp:.3f} ({len(candidates)} scans at that stamp)")
 
-    def _world_scan(self, k: int, points=None) -> np.ndarray:
-        """Scan ``k`` in the world frame, self-returns and non-finite points dropped, cached."""
-        if k in self._cache:
-            self._cache.move_to_end(k)
-            return self._cache[k]
+    def world_from_bev(self, j: int) -> np.ndarray:
+        """``(4, 4)`` T_world_bev of scan ``j``: the lidar origin, z = INS gravity up, x = the vehicle's +x levelled."""
+        R = self._poses[j][:3, :3]
+        return level_frame(self._poses[j], R[:, 0], R @ self._up[j])
+
+    def place(self, k: int, points=None) -> np.ndarray:
+        """Scan ``k`` in the world frame, self-returns and non-finite points dropped."""
         if points is None:
             points = self._lidar[k]
         points = np.asarray(points)[:, :3].astype(np.float64)
         keep = np.isfinite(points).all(axis=1) & (np.linalg.norm(points, axis=1) >= self.min_range)
-        out = transform(self._poses[k], points[keep]).astype(np.float32)
-        self._cache[k] = out
-        while len(self._cache) > self.accumulate * self.stride + 1:
-            self._cache.popitem(last=False)
-        return out
-
-    def scans_used(self, j: int) -> list[int]:
-        """The scan indices accumulated into the grid of scan ``j``: ``j`` and earlier only."""
-        return scans_used(j, self.accumulate, self.stride)
+        return transform(self._poses[k], points[keep]).astype(np.float32)
 
     def __call__(self, sample: Sample) -> dict:
-        pose = np.asarray(sample.data[config.POSES], dtype=np.float64)
-        j = self.index_of(sample.timestamp, pose)
-        bev_from_world = np.linalg.inv(world_from_bev(pose))
+        j = self.index_of(sample.timestamp, np.asarray(sample.data[config.POSES], dtype=np.float64))
+        h, w = grid_shape()
+        if not self._valid[j]:
+            unknown = np.full((h, w), np.nan, dtype=np.float16)
+            return {config.BEV_ELEVATION: np.stack([unknown] * 3), config.BEV_GEOMETRY: np.stack([unknown] * 2),
+                    config.BEV_TRAV: trav_grid(np.zeros((h, w), dtype=bool), None)}
+        bev_from_world = np.linalg.inv(self.world_from_bev(j))
 
-        points = [self._world_scan(k, sample.data[config.LIDAR] if k == j else None) for k in self.scans_used(j)]
+        points = [self.world_scan(k, sample.data[config.LIDAR] if k == j else None) for k in self.scans_used(j)]
         points = transform(bev_from_world, np.concatenate(points).astype(np.float64))
         cells = cell_index(points)
         inside = cells >= 0
@@ -199,13 +215,7 @@ class BevGrids(FramePreprocessor):
 
         elev = elevation(points, heights)
         geom = geometry(cells, heights, elev[2])
-
-        driven = None
-        if self._path[-1] - self._path[j] >= self.min_future_path:
-            window = driven_window(self._path, j, self.path_back, self.path_forward)
-            path_bev = transform(bev_from_world, self._poses[window, :3, 3])[:, :2]
-            driven = footprint(path_bev, self._centres, self.half_width)
-        trav = trav_grid(np.isfinite(elev[2]), driven)
+        trav = trav_grid(np.isfinite(elev[2]), self.driven(j, bev_from_world))
         return {config.BEV_ELEVATION: elev, config.BEV_GEOMETRY: geom, config.BEV_TRAV: trav}
 
 

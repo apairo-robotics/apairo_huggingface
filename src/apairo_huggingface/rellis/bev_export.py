@@ -25,8 +25,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.spatial.transform import Rotation
 
+from ..poses import executed_actions, relative_states
 from . import config
 from .bev import declaration, grid_shape, poses_from_rows
 from .export import (ACTION_NAMES, FPS, FRAME_INFO_NAMES, LIDAR_FROM_ROBOT, ROBOT_TYPE, SPLIT_IDS,
@@ -57,8 +57,7 @@ def frames(root, view, splits, limit: int | None = None):
     stamps = np.asarray(ds.timestamps[config.BEV_POSES], dtype=np.float64)
     poses_loader = ds.loaders[config.BEV_POSES]
     poses = poses_from_rows(np.stack([poses_loader[i] for i in range(n_scans)])) @ LIDAR_FROM_ROBOT
-    origin = np.linalg.inv(poses[0])
-    yaw = np.unwrap(np.arctan2(poses[:, 1, 0], poses[:, 0, 0]))
+    states, actions = relative_states(poses), executed_actions(poses, stamps)
     camera_files = ds.loaders[config.CAMERA].files
     label_2d_dir = Path(root) / "Rellis-3D" / seq / config.LABEL_2D
     n = n_scans if limit is None else min(limit, n_scans)
@@ -66,19 +65,14 @@ def frames(root, view, splits, limit: int | None = None):
         image = Image.fromarray(np.asarray(ds.loaders[config.CAMERA][k]))
         size = (image.width // DOWNSCALE, image.height // DOWNSCALE)
         has_2d = int((label_2d_dir / f"{Path(camera_files[k]).stem}.png").exists())
-        a = min(k, n_scans - 2)
-        dt = stamps[a + 1] - stamps[a]
-        step = np.linalg.inv(poses[a]) @ poses[a + 1]
-        pose = origin @ poses[k]
         yield {
             "observation.images.front": np.asarray(image.resize(size, Image.BILINEAR)),
             "observation.bev.elevation": np.asarray(ds.loaders[config.BEV_ELEVATION][k], dtype=np.float32),
             "observation.bev.semantic": _grid3(ds.loaders[config.BEV_SEMANTIC][k]),
             "observation.bev.trav": _grid3(ds.loaders[config.BEV_TRAV][k]),
-            "observation.state": np.concatenate(
-                [pose[:3, 3], Rotation.from_matrix(pose[:3, :3]).as_quat()]).astype(np.float32),
+            "observation.state": states[k],
             "observation.frame_info": np.array([splits[(seq, k)], k, has_2d], dtype=np.int64),
-            "action": np.array([step[0, 3] / dt, (yaw[a + 1] - yaw[a]) / dt], dtype=np.float32),
+            "action": actions[k],
             "task": TASK,
         }
 

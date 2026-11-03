@@ -19,7 +19,8 @@ the pose are read at the scan itself:
 - ``observation.bev.trav``       ``(200, 200, 3)`` PNG: 1 driven / 0 seen, not
   driven / 255 unknown, the value in every channel;
 - ``observation.state``          ``(7,)`` float32: GICP pose relative to the
-  episode's first scan, ``[x, y, z, qx, qy, qz, qw]``, vehicle frame;
+  episode's first frame, ``[x, y, z, qx, qy, qz, qw]``, in that frame's
+  vehicle frame (not gravity-aligned: the grids are, the state is not);
 - ``action``                     ``(2,)`` float32: executed forward speed (m/s)
   and yaw rate (rad/s), from the GICP poses of this scan and the next one --
   the action of the RELLIS BEV export;
@@ -32,6 +33,8 @@ the pose are read at the scan itself:
 
 TartanDrive repeats some scans under the same stamp (identical points); the
 export keeps the first of each repeat, so LeRobot frames are distinct instants.
+Scans without a valid GICP pose or INS attitude (all-unknown grids) are not
+exported either.
 Grid layout: :mod:`apairo_huggingface.bev_grid` (row 0 = 30 m ahead, column
 0 = 20 m left, the robot drives up the image).
 """
@@ -42,11 +45,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.spatial.transform import Rotation
-
 from ..bev_grid import grid_shape
+from ..poses import executed_actions, relative_states
 from . import config
-from .bev import GEOMETRY_NAMES, open_view
+from .bev import GEOMETRY_NAMES, open_view, scan_poses, valid_scans
 
 MAX_EPISODE_FRAMES = 1000
 DOWNSCALE = 2                 # 1024x544 -> 512x272: context for the grids, not the product
@@ -62,48 +64,53 @@ def _grid3(grid: np.ndarray) -> np.ndarray:
 
 def scan_clock(view):
     """The recording on the scan clock: ``(ds, synced, keep)``, ``keep`` the synced
-    frames exported (the first of every repeated scan)."""
-    ds = open_view(view, SYNC_KEYS + [config.POSES, config.BEV_ELEVATION, config.BEV_GEOMETRY])
+    frames exported: the first of every repeated scan, and only scans with a
+    valid pose and attitude (their grids are all-unknown)."""
+    ds = open_view(view, SYNC_KEYS + [config.POSES, config.POSE_VALID, config.ATTITUDE,
+                                      config.BEV_ELEVATION, config.BEV_GEOMETRY])
     synced = ds.synchronize(reference=config.BEV_TRAV, method="nearest", tolerance=config.TOLERANCE)
     stamps = np.asarray(ds.timestamps[config.BEV_TRAV], dtype=np.float64)
     scans = np.asarray(synced.frame_indices[config.BEV_TRAV])
-    keep = np.flatnonzero(np.concatenate([[True], np.diff(stamps[scans]) > 0]))
+    first = np.concatenate([[True], np.diff(stamps[scans]) > 0])
+    keep = np.flatnonzero(first & valid_scans(ds)[scans])
     return ds, synced, keep
 
 
+def episode_bounds(n: int) -> list[tuple[int, int]]:
+    """``n`` frames cut into equal consecutive episodes of at most ``MAX_EPISODE_FRAMES``
+    (a 1-frame tail episode breaks LeRobot's stats aggregation): ``[(start, end), ...]``."""
+    edges = np.linspace(0, n, -(-n // MAX_EPISODE_FRAMES) + 1).round().astype(int).tolist()
+    return list(zip(edges[:-1], edges[1:]))
+
+
 def frames(view, recording: int = 0, limit: int | None = None):
-    """Yield LeRobot frame dicts for one BEV-processed recording view."""
+    """Yield LeRobot frame dicts for one BEV-processed recording view, episode
+    after episode (:func:`episode_bounds`); the state restarts at each episode."""
     ds, synced, keep = scan_clock(Path(view))
-    scans = np.asarray(synced.frame_indices[config.BEV_TRAV])
-    cameras = np.asarray(synced.frame_indices[config.CAMERA])
-    stamps = np.asarray(ds.timestamps[config.BEV_TRAV], dtype=np.float64)
-    poses_loader = ds.loaders[config.POSES]
-    poses = np.stack([np.asarray(poses_loader[int(scans[i])], dtype=np.float64) for i in keep])
-    origin = np.linalg.inv(poses[0])
-    yaw = np.unwrap(np.arctan2(poses[:, 1, 0], poses[:, 0, 0]))
+    scans = np.asarray(synced.frame_indices[config.BEV_TRAV])[keep]
+    cameras = np.asarray(synced.frame_indices[config.CAMERA])[keep]
+    stamps = np.asarray(ds.timestamps[config.BEV_TRAV], dtype=np.float64)[scans]
+    poses = scan_poses(ds)[scans]
+    actions = executed_actions(poses, stamps)
     n = len(keep) if limit is None else min(limit, len(keep))
-    for f in range(n):
-        i = keep[f]
-        k = int(scans[i])
-        sample = synced[int(i)]
-        a = min(f, len(keep) - 2)           # the last frame repeats the previous action
-        dt = stamps[scans[keep[a + 1]]] - stamps[scans[keep[a]]]
-        step = np.linalg.inv(poses[a]) @ poses[a + 1]
-        rel = origin @ poses[f]
-        image = Image.fromarray(np.asarray(sample.data[config.CAMERA]))
-        yield {
-            "observation.images.front": np.asarray(
-                image.resize((image.width // DOWNSCALE, image.height // DOWNSCALE), Image.BILINEAR)),
-            "observation.bev.elevation": np.asarray(ds.loaders[config.BEV_ELEVATION][k], dtype=np.float32),
-            "observation.bev.geometry": np.asarray(ds.loaders[config.BEV_GEOMETRY][k], dtype=np.float32),
-            "observation.bev.trav": _grid3(sample.data[config.BEV_TRAV]),
-            "observation.state": np.concatenate(
-                [rel[:3, 3], Rotation.from_matrix(rel[:3, :3]).as_quat()]).astype(np.float32),
-            "observation.frame_info": np.array([recording, k, cameras[i]], dtype=np.int64),
-            "observation.command": np.asarray(sample.data[config.ACTION], dtype=np.float32),
-            "action": np.array([step[0, 3] / dt, (yaw[a + 1] - yaw[a]) / dt], dtype=np.float32),
-            "task": config.TASK,
-        }
+    for start, end in episode_bounds(n):
+        states = relative_states(poses[start:end])
+        for f in range(start, end):
+            k = int(scans[f])
+            sample = synced[int(keep[f])]
+            image = Image.fromarray(np.asarray(sample.data[config.CAMERA]))
+            yield {
+                "observation.images.front": np.asarray(
+                    image.resize((image.width // DOWNSCALE, image.height // DOWNSCALE), Image.BILINEAR)),
+                "observation.bev.elevation": np.asarray(ds.loaders[config.BEV_ELEVATION][k], dtype=np.float32),
+                "observation.bev.geometry": np.asarray(ds.loaders[config.BEV_GEOMETRY][k], dtype=np.float32),
+                "observation.bev.trav": _grid3(sample.data[config.BEV_TRAV]),
+                "observation.state": states[f - start],
+                "observation.frame_info": np.array([recording, k, cameras[f]], dtype=np.int64),
+                "observation.command": np.asarray(sample.data[config.ACTION], dtype=np.float32),
+                "action": actions[f],
+                "task": config.TASK,
+            }
 
 
 def features(height: int, width: int) -> dict:
@@ -139,9 +146,7 @@ def to_lerobot(views, repo_id: str, *, lerobot_root=None, limit: int | None = No
     for r, view in enumerate(views):
         n = len(scan_clock(view)[2])
         n = n if limit is None else min(limit, n)
-        # Equal consecutive pieces of at most MAX_EPISODE_FRAMES (a 1-frame
-        # tail episode breaks LeRobot's stats aggregation).
-        ends = set(np.linspace(0, n, -(-n // MAX_EPISODE_FRAMES) + 1).round().astype(int)[1:].tolist())
+        ends = {end for _, end in episode_bounds(n)}
         first_episode = dataset.meta.total_episodes
         for f, frame in enumerate(frames(view, recording=r, limit=limit)):
             dataset.add_frame(frame)
