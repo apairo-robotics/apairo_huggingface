@@ -31,6 +31,24 @@ STATE_NAMES = ["x", "y", "z", "qx", "qy", "qz", "qw"]
 ACTION_NAMES = ["linear_velocity", "angular_velocity"]
 ENV_NAMES = ["snow_depth_m", "air_temperature_c"]
 
+EXCLUDED = (
+    "2025-01-29/red_2025-01-30-09-58",
+)
+"""Trajectories (``<deployment>/<trajectory>``) left out of the image dataset.
+
+``2025-01-29/red_2025-01-30-09-58`` (-24 degC): every Basler image is pure
+white, the camera saturated in the cold. Its masks cannot be checked against
+the image and the RGB observation carries no information, so the episode is
+useless for image learning. Its lidar labels are unaffected (they do not depend
+on the camera) and stay in the point-label companion.
+"""
+
+
+def excluded(traj_dir) -> bool:
+    """True if ``traj_dir`` (``.../<deployment>/<trajectory>``) is in :data:`EXCLUDED`."""
+    traj_dir = Path(traj_dir)
+    return f"{traj_dir.parent.name}/{traj_dir.name}" in EXCLUDED
+
 
 # ------------------------------------------------------------------ helpers
 

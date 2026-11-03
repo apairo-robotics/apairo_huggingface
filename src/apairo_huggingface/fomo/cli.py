@@ -5,6 +5,7 @@
     apairo-fomo process ~/data/fomo/2025-10-14/red_2025-10-14-11-41
     apairo-fomo run --root ~/data/fomo --color red      # fetch + process, every deployment
     apairo-fomo export ~/data/fomo --repo-id apairo-robotics/fomo_traversability --out ~/data/fomo_lerobot
+    apairo-fomo export-labels ~/data/fomo --out ~/data/fomo_point_labels
 """
 
 from __future__ import annotations
@@ -85,14 +86,29 @@ def cmd_run(args) -> None:
 
 
 def cmd_export(args) -> None:
-    from .export import to_lerobot
+    from .export import excluded, to_lerobot
 
     root = Path(args.root)
     trajs = [root] if (root / config.TRAV_MASK).is_dir() else _trajectories(root)
+    for t in [t for t in trajs if excluded(t)]:
+        logging.info("%s/%s: excluded (see export.EXCLUDED)", t.parent.name, t.name)
+    trajs = [t for t in trajs if not excluded(t)]
     if not trajs:
         raise SystemExit(f"no processed trajectory under {root}")
     logging.info("exporting %d trajectories", len(trajs))
     to_lerobot(trajs, args.repo_id, root=args.out, push=args.push)
+
+
+def cmd_export_labels(args) -> None:
+    from .point_labels import export
+
+    root = Path(args.root)
+    trajs = [root] if (root / config.TRAV_TRAJ).is_dir() else sorted(
+        p.parent.parent for p in root.glob(f"*/*/{config.TRAV_TRAJ}/timestamps.txt"))
+    if not trajs:
+        raise SystemExit(f"no labelled trajectory under {root}")
+    logging.info("exporting the point labels of %d trajectories", len(trajs))
+    export(trajs, args.out)
 
 
 def main(argv=None) -> None:
@@ -129,6 +145,12 @@ def main(argv=None) -> None:
     p.add_argument("--out", help="local output directory (default: LeRobot's cache)")
     p.add_argument("--push", action="store_true", help="upload to the Hugging Face Hub")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("export-labels",
+                       help="per-point scan labels -> one parquet per trajectory (labels only)")
+    p.add_argument("root", help="a processed trajectory, or a root of <deployment>/<trajectory>")
+    p.add_argument("--out", required=True, help="output directory")
+    p.set_defaults(func=cmd_export_labels)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")

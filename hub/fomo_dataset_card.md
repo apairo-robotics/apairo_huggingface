@@ -17,7 +17,7 @@ pretty_name: FoMo Multi-Season Traversability (LeRobot format)
 
 # FoMo Multi-Season Traversability - LeRobotDataset
 
-> **A derived dataset.** Twelve repetitions of the same ~300 m "red" route in
+> **A derived dataset.** Eleven repetitions of the same ~300 m "red" route in
 > the Foret Montmorency boreal forest, recorded once per deployment from
 > November 2024 to November 2025 (bare ground, snow over 1 m, summer, night),
 > converted to a LeRobotDataset with **a per-pixel traversability ground truth
@@ -56,7 +56,8 @@ frame["action"]                             # [linear_velocity, angular_velocity
 
 - **fps**: 10 (Basler clock) - **robot_type**: `clearpath_warthog` -
   **task**: `drive the robot along the forest trail`
-- 12 trajectories -> 12 episodes, 28,268 frames.
+- 11 trajectories -> 11 episodes, 25,254 frames (the 12th red trajectory,
+  2025-01-29, is excluded: see Known issues).
 - The mask is stored as lossless PNG (`image`), not mp4 (`video`): video
   compression would corrupt the label values. Read any one channel.
 - The lidar *produces* the labels and the poses; it is not part of the
@@ -72,7 +73,7 @@ frame["action"]                             # [linear_velocity, angular_velocity
 | `255` | **no data**: neither driven nor hit by a lidar return. |
 
 Labels are conservative by construction: absence of `1` means "not
-demonstrated", never "untraversable". Across the 12 trajectories, about 9 % of
+demonstrated", never "untraversable". Across the 12 processed trajectories, about 9 % of
 pixels are `1`, 10 % are `0` and 81 % are `255`.
 
 ## Episodes
@@ -87,15 +88,14 @@ and compared. `gt_stamps` is the number of GNSS stamps scored.
 | 0 | `2024-11-21/red_2024-11-21-10-34` | 2,452 | 325 | 1,269 | 0.150 | 0.49 | 0.00 | 3.3 |
 | 1 | `2024-11-28/red_2024-11-28-09-30` | 2,157 | 312 | 1,125 | 0.158 | 0.52 | n/a | -2.8 |
 | 2 | `2025-01-10/red_2025-01-10-12-02` | 3,740 | 320 | 3,833 | 0.147 | 0.58 | 0.50 | -5.9 |
-| 3 | `2025-01-29/red_2025-01-30-09-58` | 3,014 | 321 | 3,166 | 0.103 | 0.44 | 0.85 | -24.0 |
-| 4 | `2025-03-10/red_2025-03-10-16-53` | 1,916 | 315 | 2,106 | 0.195 | 0.42 | 1.06 | -6.4 |
-| 5 | `2025-04-15/red_2025-04-15-51-56` | 4,485 | 321 | 4,609 | 0.145 | 0.61 | n/a | n/a |
-| 6 | `2025-05-28/red_2025-05-28-10-46` | 1,829 | 298 | 1,927 | 0.157 | 0.44 | 0.00 | 21.4 |
-| 7 | `2025-06-26/red_2025-06-26-10-31` | 1,739 | 304 | 1,824 | 0.173 | 0.36 | n/a | n/a |
-| 8 | `2025-08-20/red_2025-08-20-10-42` | 1,824 | 304 | 1,931 | 0.191 | 0.69 | 0.00 | 18.1 |
-| 9 | `2025-09-24/red_2025-09-24-10-45` | 1,703 | 303 | 1,815 | 0.195 | 0.44 | 0.00 | 14.7 |
-| 10 | `2025-10-14/red_2025-10-14-11-41` | 1,606 | 306 | 1,690 | 0.211 | 0.60 | 0.00 | 14.2 |
-| 11 | `2025-11-03/red_2025-11-03-18-30` | 1,803 | 302 | 1,922 | 0.152 | 0.59 | 0.00 | 1.8 |
+| 3 | `2025-03-10/red_2025-03-10-16-53` | 1,916 | 315 | 2,106 | 0.195 | 0.42 | 1.06 | -6.4 |
+| 4 | `2025-04-15/red_2025-04-15-51-56` | 4,485 | 321 | 4,609 | 0.145 | 0.61 | n/a | n/a |
+| 5 | `2025-05-28/red_2025-05-28-10-46` | 1,829 | 298 | 1,927 | 0.157 | 0.44 | 0.00 | 21.4 |
+| 6 | `2025-06-26/red_2025-06-26-10-31` | 1,739 | 304 | 1,824 | 0.173 | 0.36 | n/a | n/a |
+| 7 | `2025-08-20/red_2025-08-20-10-42` | 1,824 | 304 | 1,931 | 0.191 | 0.69 | 0.00 | 18.1 |
+| 8 | `2025-09-24/red_2025-09-24-10-45` | 1,703 | 303 | 1,815 | 0.195 | 0.44 | 0.00 | 14.7 |
+| 9 | `2025-10-14/red_2025-10-14-11-41` | 1,606 | 306 | 1,690 | 0.211 | 0.60 | 0.00 | 14.2 |
+| 10 | `2025-11-03/red_2025-11-03-18-30` | 1,803 | 302 | 1,922 | 0.152 | 0.59 | 0.00 | 1.8 |
 
 KISS-ICP drift stays at 0.10-0.21 m RMSE over ~300 m on every deployment,
 snow included, so the corridor is placed on the camera image by the odometry
@@ -103,11 +103,13 @@ alone.
 
 ### Known issues
 
-- **2025-01-29 (`red_2025-01-30-09-58`, -24 degC): the camera images are
-  saturated.** Every sampled Basler frame of this trajectory is white
-  (mean intensity 255, >98 % of pixels saturated). The masks are valid lidar
-  geometry, but the RGB observation carries no information. Drop episode 3 for
-  any image-based use.
+- **2025-01-29 (`red_2025-01-30-09-58`, -24 degC) is excluded.** Every Basler
+  image of this trajectory is pure white: the camera saturated in the cold
+  (mean intensity 255, >98 % of pixels saturated). Its masks cannot be checked
+  against the image and the RGB observation carries no information, so the
+  episode is useless for image learning and is left out (`EXCLUDED` in
+  `fomo/export.py`; 3,014 frames). Its per-point lidar labels are unaffected
+  and are in the companion dataset `apairo-robotics/fomo_point_labels`.
 - **2025-11-03 is a night run**: the scene is lit by the robot's headlights
   only (mean image intensity ~24/255). The masks are unaffected.
 - **Tracked configuration** (2025-01-10, 2025-03-10): the Warthog runs on
@@ -119,8 +121,8 @@ alone.
   summer (sensor noise, about -0.002 m); the table above clips it at 0.
 - LeRobot `timestamp` is `frame_index / fps`. A camera frame with no lidar scan
   within 50 ms has no mask and is skipped, so a few real gaps are hidden:
-  about 50 frames (0.2-0.3 s each) on 2025-04-15, 5 on 2025-11-03, 1 on
-  2025-01-29, none elsewhere.
+  about 50 frames (0.2-0.3 s each) on 2025-04-15, 5 on 2025-11-03, none
+  elsewhere.
 
 ## How the masks are built
 
@@ -168,7 +170,7 @@ pip install "apairo-huggingface @ git+https://github.com/apairo-robotics/apairo_
 # fetch + odometry + labels + ATE, for the red trajectory of every deployment
 apairo-fomo run --root /data/fomo --color red --drop-lidar
 
-# one LeRobotDataset, one episode per trajectory
+# one LeRobotDataset, one episode per trajectory (export.EXCLUDED left out)
 apairo-fomo export /data/fomo --repo-id apairo-robotics/fomo_traversability --out /data/fomo_lerobot
 ```
 
