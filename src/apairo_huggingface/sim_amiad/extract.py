@@ -9,6 +9,7 @@ stamp, i.e. simulation time; ``/cmd_vel`` has no header and takes the latest
     rgb/              000000.png ...   (720, 1280, 3) uint8
     semantic/         000000.png ...   (720, 1280) uint8 training class id
     depth/            000000.png ...   (720, 1280) uint16 mm, 0 = no return
+                                       (sky, or beyond 65.534 m: see depth_to_mm)
     points_semantic/  000000.npy ...   (N, 4) float32 x y z class id
     pose/ odometry/ imu/ cmd_vel/      one stacked .npy each
     semantic_labels.jsonl              the raw per-frame runtime id -> name maps
@@ -92,6 +93,20 @@ def decode_points_semantic(msg) -> np.ndarray:
     return np.column_stack([raw[:, :3], cls]).astype(np.float32)
 
 
+def depth_to_mm(depth_m: np.ndarray) -> tuple[np.ndarray, int]:
+    """Planar depth in metres -> uint16 millimetres, 0 = no return.
+
+    uint16 mm holds up to 65.534 m, past the lidar's 50 m range (and the
+    46 m the sim depth reaches on the amiad bag). A depth beyond it is stored
+    as 0, like the sky, never clipped to 65535: the occlusion test would read
+    that as a surface at 65.535 m. Returns the image and the count of such
+    out-of-range pixels (non-finite ones, the sky, are not counted).
+    """
+    mm = np.round(np.where(np.isfinite(depth_m), depth_m, 0) * 1000.0)  # in the input dtype
+    out_of_range = mm > 65534
+    return np.where((mm > 0) & ~out_of_range, mm, 0).astype(np.uint16), int(out_of_range.sum())
+
+
 def check_classes_json(path) -> None:
     data = json.loads(Path(path).read_text())
     if data["name_to_id"] != config.NAME_TO_ID:
@@ -123,6 +138,7 @@ def extract(bag, out_dir, *, t_start: float | None = None, t_stop: float | None 
     unknown_names, label_sets = {}, set()
     camera_info = None
     camera_info_changes = 0
+    depth_out_of_range = 0          # pixels past the uint16 mm range, stored as 0
     frame_ids = {}
     clock = None
     in_window = lambda t: (t_start is None or t >= t_start) and (t_stop is None or t < t_stop)
@@ -227,7 +243,8 @@ def extract(bag, out_dir, *, t_start: float | None = None, t_stop: float | None 
                 stamps[config.RGB].append(t)
             elif topic == config.TOPIC_DEPTH:
                 d = np.frombuffer(msg.data, dtype=np.float32).reshape(msg.height, msg.width)
-                mm = np.where(np.isfinite(d), np.round(d * 1000.0), 0).clip(0, 65535).astype(np.uint16)
+                mm, out_of_range = depth_to_mm(d)
+                depth_out_of_range += out_of_range
                 idx = len(stamps[config.DEPTH])
                 futures.append(pool.submit(save_png, mm, out / config.DEPTH / f"{idx:06d}.png"))
                 stamps[config.DEPTH].append(t)
@@ -294,6 +311,7 @@ def extract(bag, out_dir, *, t_start: float | None = None, t_stop: float | None 
         "static_edges_max_deviation": {f"{a}->{b}": v[1] for (a, b), v in static.items()},
         "moving_edges_not_extracted": sorted(f"{a}->{b}" for a, b in moving_edges),
         "camera_info_changes": camera_info_changes,
+        "depth_pixels_beyond_65534_mm": depth_out_of_range,
         "segmentation_names_not_in_name_to_id": unknown_names,
         "distinct_label_maps": [dict(s) for s in sorted(label_sets)],
         "segmentation_dropped_no_label_map": len(pending_seg),

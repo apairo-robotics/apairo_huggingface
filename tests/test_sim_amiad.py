@@ -12,6 +12,7 @@ from apairo_huggingface.sim_amiad.agreement import scores
 from apairo_huggingface.sim_amiad.extract import (
     check_classes_json,
     decode_points_semantic,
+    depth_to_mm,
     pose7_to_matrix,
     runtime_lut,
 )
@@ -63,6 +64,21 @@ def test_classes_json_drift_is_refused(tmp_path):
 
 
 # ---------------------------------------------------------------- labeling
+
+def test_depth_beyond_the_uint16_range_is_no_return_not_saturated():
+    """A depth past 65.534 m does not fit in uint16 mm: it is stored as 0 = no
+    return, never clipped to 65535, which the occlusion test would read as a
+    surface at 65.535 m."""
+    d = np.array([[1.2345, 65.534, 65.5355, 80.0], [np.inf, np.nan, -0.5, 0.0]], np.float32)
+    mm, out_of_range = depth_to_mm(d)
+    assert mm.dtype == np.uint16
+    np.testing.assert_array_equal(mm, [[1234, 65534, 0, 0], [0, 0, 0, 0]])
+    assert out_of_range == 2
+    # a lidar point on the far surface is not labelled through a saturated pixel
+    uv = np.array([[3.0, 0.0, 80.0], [2.0, 0.0, 65.6]])
+    labels, visible = visible_labels(uv, np.full((2, 4), 3, np.uint8), mm)
+    assert not visible.any()
+
 
 def test_only_points_matching_the_depth_image_get_a_label():
     semantic = np.full((4, 4), 3, dtype=np.uint8)

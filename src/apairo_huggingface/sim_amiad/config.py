@@ -28,7 +28,7 @@ TOPIC_TF = "/tf"                            # no /tf_static: fixed mounts are re
 LIDAR = "lidar"
 RGB = "rgb"
 SEMANTIC = "semantic"          # (H, W) uint8 training class id (name_to_id), 0 unlabeled
-DEPTH = "depth"                # (H, W) uint16 millimetres, 0 = no return (sky)
+DEPTH = "depth"                # (H, W) uint16 millimetres, 0 = no return (sky, or > 65.534 m)
 POINTS_SEMANTIC = "points_semantic"  # (N, 4) float32 x y z class id (255: outside the camera)
 POSE = "pose"                  # (T, 7) odom -> base_link, t_xyz_q_xyzw, from /tf
 ODOMETRY = "odometry"          # (T, 13) pose7 + twist6, from /imu/odometry
