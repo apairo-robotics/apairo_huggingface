@@ -208,8 +208,10 @@ centred on that scan's pose, as apairo **derived channels** (one
 Design choices (all in `rellis/config.py`, "BEV grids"):
 
 - **Grid**: 0.2 m cells, 40 x 40 m, forward-biased: 30 m ahead, 10 m behind,
-  20 m either side. Gravity-aligned frame: origin at the lidar, +x the robot
-  heading (the Ouster's -x) projected on the ground plane, +y left, z world up.
+  20 m either side. Frame: origin at the lidar, +x the robot heading (the
+  Ouster's -x) projected on the world xy plane, +y left, z the world z of the
+  RELLIS poses (not checked against gravity, so slope and pitch drift of the
+  pose world are kept).
   Row 0 is 30 m ahead, column 0 is 20 m left: the robot drives up the image.
 - **Heights** are lidar z + 1.0 m (the measured lidar height), so the ground
   under the robot reads ~0.
