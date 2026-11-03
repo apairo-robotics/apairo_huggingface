@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .. import bev_grid
+
 SEQUENCES = ["00000", "00001", "00002", "00003", "00004"]
 
 # Channel names: the source directories (symlinked into the view), then the
@@ -63,18 +65,19 @@ ONTOLOGY = {
 }
 
 # ------------------------------------------------------------------ BEV grids
-# Robot-centred bird's-eye-view grids, one per scan (see :mod:`.bev`). The grid
-# frame is gravity-aligned: origin at the lidar, +x the robot's heading (the
-# Ouster -x) projected on the horizontal plane, +y left, +z world up. Row 0 is
-# the far front (x = BEV_X_MAX), column 0 the far left (y = BEV_Y_MAX), so the
-# grid reads like a map with the robot driving up the page.
+# Robot-centred bird's-eye-view grids, one per scan (see :mod:`.bev`), on the
+# grid shared with the other datasets (:mod:`apairo_huggingface.bev_grid`):
+# gravity-aligned, origin at the lidar, +x the robot's heading (the Ouster -x)
+# projected on the horizontal plane, +y left, +z world up. Row 0 is the far
+# front (x = BEV_X_MAX), column 0 the far left (y = BEV_Y_MAX), so the grid
+# reads like a map with the robot driving up the page.
 BEV_POSES = "poses"            # poses.txt as a csv channel; it carries the scan clock
 BEV_ELEVATION = "bev_elevation"  # (3, H, W) float16: min / max / mean height, NaN unknown
 BEV_SEMANTIC = "bev_semantic"    # (H, W) uint8: majority ontology id, 255 unknown
 BEV_TRAV = "bev_trav"            # (H, W) uint8: 1 driven / 0 seen, not driven / 255 unknown
-BEV_RESOLUTION = 0.2           # m per cell
-BEV_X_MIN, BEV_X_MAX = -10.0, 30.0   # m, behind / ahead of the lidar (forward-biased)
-BEV_Y_MIN, BEV_Y_MAX = -20.0, 20.0   # m, right / left
+BEV_RESOLUTION = bev_grid.RESOLUTION              # 0.2 m per cell
+BEV_X_MIN, BEV_X_MAX = bev_grid.X_MIN, bev_grid.X_MAX   # -10 / 30 m, behind / ahead of the lidar
+BEV_Y_MIN, BEV_Y_MAX = bev_grid.Y_MIN, bev_grid.Y_MAX   # -20 / 20 m, right / left
 # Heights are stored relative to the ground under the robot: z_lidar + LIDAR_HEIGHT.
 # Accumulation: the current scan plus the BEV_ACCUMULATE - 1 previous scans taken
 # every BEV_STRIDE scans (past only, never future: the grid at scan j uses scans

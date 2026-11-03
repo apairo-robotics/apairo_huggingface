@@ -49,9 +49,9 @@ import numpy as np
 from apairo import RawDataset
 from apairo.core.preprocessor import FramePreprocessor
 from apairo.core.sample import Sample
-from apairo_preprocess import BEVRasterisation
-from scipy.spatial import cKDTree
 
+from ..bev_grid import (PLANE_BOUNDS, cell_centres, cell_index, densify, driven_window, elevation,  # noqa: F401
+                        footprint, grid_shape, scans_used, to_plane, trav_grid, transform, world_from_heading)
 from . import config
 
 logger = logging.getLogger(__name__)
@@ -96,41 +96,8 @@ def open_view(view, keys=INPUT_KEYS) -> RawDataset:
 
 
 # ------------------------------------------------------------------ geometry
-
-def grid_shape() -> tuple[int, int]:
-    r = config.BEV_RESOLUTION
-    return (int(round((config.BEV_X_MAX - config.BEV_X_MIN) / r)),
-            int(round((config.BEV_Y_MAX - config.BEV_Y_MIN) / r)))
-
-
-# The grid in BEVRasterisation's convention (row 0 at its ymax, column 0 at its
-# xmin) is the BEV plane seen as (u, v) = (-y, x): column 0 = far left, row 0 = far front.
-PLANE_BOUNDS = (-config.BEV_Y_MAX, -config.BEV_Y_MIN, config.BEV_X_MIN, config.BEV_X_MAX)
-
-
-def to_plane(points_bev: np.ndarray) -> np.ndarray:
-    return np.column_stack([-points_bev[:, 1], points_bev[:, 0]])
-
-
-def cell_index(points_bev: np.ndarray) -> np.ndarray:
-    """Flat cell index of each point, -1 outside the grid (BEVRasterisation's binning)."""
-    h, w = grid_shape()
-    r = config.BEV_RESOLUTION
-    row = np.floor((config.BEV_X_MAX - points_bev[:, 0]) / r).astype(np.int64)
-    col = np.floor((config.BEV_Y_MAX - points_bev[:, 1]) / r).astype(np.int64)
-    inside = (row >= 0) & (row < h) & (col >= 0) & (col < w)
-    return np.where(inside, row * w + col, -1)
-
-
-def cell_centres() -> np.ndarray:
-    """``(H * W, 2)`` x, y of every cell centre in the BEV frame, row-major."""
-    h, w = grid_shape()
-    r = config.BEV_RESOLUTION
-    x = config.BEV_X_MAX - (np.arange(h) + 0.5) * r
-    y = config.BEV_Y_MAX - (np.arange(w) + 0.5) * r
-    xx, yy = np.meshgrid(x, y, indexing="ij")
-    return np.column_stack([xx.ravel(), yy.ravel()])
-
+# The grid itself (shape, binning, frame, elevation, footprint) is the shared
+# one; RELLIS adds where its heading points and its own self-returns.
 
 def poses_from_rows(rows: np.ndarray) -> np.ndarray:
     """``(N, 12)`` row-major 3x4 rows of poses.txt -> ``(N, 4, 4)`` T_world_lidar."""
@@ -142,13 +109,7 @@ def poses_from_rows(rows: np.ndarray) -> np.ndarray:
 
 def world_from_bev(T_world_lidar: np.ndarray) -> np.ndarray:
     """``(4, 4)`` T_world_bev: the lidar origin, world z up, x = robot heading (lidar -x) on the ground plane."""
-    forward = -T_world_lidar[:3, 0]
-    yaw = np.arctan2(forward[1], forward[0])
-    c, s = np.cos(yaw), np.sin(yaw)
-    T = np.eye(4)
-    T[:3, :3] = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
-    T[:3, 3] = T_world_lidar[:3, 3]
-    return T
+    return world_from_heading(T_world_lidar, -T_world_lidar[:3, 0])
 
 
 def in_self_box(points_lidar: np.ndarray) -> np.ndarray:
@@ -158,27 +119,7 @@ def in_self_box(points_lidar: np.ndarray) -> np.ndarray:
             & (y <= config.SELF_BOX_Y[1]) & (z >= config.SELF_BOX_Z[0]) & (z <= config.SELF_BOX_Z[1]))
 
 
-def transform(T: np.ndarray, points: np.ndarray) -> np.ndarray:
-    return points @ T[:3, :3].T + T[:3, 3]
-
-
 # -------------------------------------------------------------------- layers
-
-_RASTERS = {
-    name: BEVRasterisation(bounds=PLANE_BOUNDS, resolution=config.BEV_RESOLUTION,
-                           points_key="uv", values_key="value", reduce=reduce, background=np.nan)
-    for name, reduce in (("max", "max"), ("mean", "mean"))
-}
-
-
-def elevation(points_bev: np.ndarray, heights: np.ndarray) -> np.ndarray:
-    """``(3, H, W)`` float16 min / max / mean height per cell, NaN where empty."""
-    uv = to_plane(points_bev)
-    top = _RASTERS["max"](Sample(data={"uv": uv, "value": heights}))
-    low = -_RASTERS["max"](Sample(data={"uv": uv, "value": -heights}))
-    mean = _RASTERS["mean"](Sample(data={"uv": uv, "value": heights}))
-    return np.stack([low, top, mean]).astype(np.float16)
-
 
 def semantic(cells: np.ndarray, labels: np.ndarray) -> np.ndarray:
     """``(H, W)`` uint8 majority ontology id per cell; void only if nothing else fell; 255 empty.
@@ -194,25 +135,6 @@ def semantic(cells: np.ndarray, labels: np.ndarray) -> np.ndarray:
     best = np.where(counts.sum(axis=1) > 0, CLASS_IDS[counts.argmax(axis=1)], 0)
     out = np.where(seen, best, config.NO_DATA).astype(np.uint8)
     return out.reshape(h, w)
-
-
-def densify(path_xy: np.ndarray, step: float = 0.1) -> np.ndarray:
-    """Points every ``step`` metres along a polyline."""
-    if len(path_xy) < 2:
-        return path_xy
-    seg = np.linalg.norm(np.diff(path_xy, axis=0), axis=1)
-    s = np.concatenate([[0.0], np.cumsum(seg)])
-    t = np.arange(0.0, s[-1] + step, step)
-    return np.column_stack([np.interp(t, s, path_xy[:, 0]), np.interp(t, s, path_xy[:, 1])])
-
-
-def footprint(path_bev_xy: np.ndarray, centres: np.ndarray, half_width: float) -> np.ndarray:
-    """``(H, W)`` bool: cells whose centre is within ``half_width`` of the path."""
-    h, w = grid_shape()
-    if len(path_bev_xy) == 0:
-        return np.zeros((h, w), dtype=bool)
-    d, _ = cKDTree(densify(path_bev_xy)).query(centres, distance_upper_bound=half_width + 1.0)
-    return (d <= half_width).reshape(h, w)
 
 
 # -------------------------------------------------------------- preprocessor
@@ -284,7 +206,7 @@ class BevGrids(FramePreprocessor):
 
     def scans_used(self, j: int) -> list[int]:
         """The scan indices accumulated into the grid of scan ``j``: ``j`` and earlier only."""
-        return [k for k in range(j, j - self.accumulate * self.stride, -self.stride) if k >= 0]
+        return scans_used(j, self.accumulate, self.stride)
 
     def __call__(self, sample: Sample) -> dict:
         j = self.index_of(sample.timestamp)
@@ -310,16 +232,12 @@ class BevGrids(FramePreprocessor):
         elev = elevation(points, points[:, 2] + self.lidar_height)
         sem = semantic(cells, labels)
 
-        h, w = grid_shape()
+        driven = None
         if self._path[-1] - self._path[j] >= self.min_future_path:
-            window = (self._path >= self._path[j] - self.path_back) & (self._path <= self._path[j] + self.path_forward)
+            window = driven_window(self._path, j, self.path_back, self.path_forward)
             path_bev = transform(bev_from_world, self._poses[window, :3, 3])[:, :2]
             driven = footprint(path_bev, self._centres, self.half_width)
-            trav = np.full((h, w), config.NO_DATA, dtype=np.uint8)
-            trav[sem != config.NO_DATA] = 0
-            trav[driven] = 1
-        else:
-            trav = np.full((h, w), config.NO_DATA, dtype=np.uint8)
+        trav = trav_grid(sem != config.NO_DATA, driven)
         return {config.BEV_ELEVATION: elev, config.BEV_SEMANTIC: sem, config.BEV_TRAV: trav}
 
 
