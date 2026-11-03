@@ -64,7 +64,7 @@ def aligned_frames(episode):
         reference=config.REFERENCE, method=config.METHOD, tolerance=config.TOLERANCE
     )
     for channel, transform in CHANNEL_TRANSFORMS.items():
-        frames = frames.transform(channel, transform)
+        frames = frames.transform(channel, transform, in_place=False)
     return frames
 
 
