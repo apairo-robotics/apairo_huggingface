@@ -125,35 +125,44 @@ tests/
 
 [FoMo](https://fomo.norlab.ulaval.ca) (Forêt Montmorency, CC BY 4.0) recorded the
 same forest trails twelve times between November 2024 and November 2025, snow
-included, and serves them from a public S3 bucket. `apairo_huggingface.fomo` turns it into a
-LeRobotDataset with self-supervised traversability masks:
+included, and serves them from a public S3 bucket. `apairo_huggingface.fomo` derives
+self-supervised traversability labels from it, one label channel per sensor,
+published as labels only (keyed by the raw FoMo file names):
 
 - `fomo_bin`, an apairo **format plugin** for FoMo's packed 26-byte lidar records;
 - a declaration (`fomo/apairo.yaml`) reading the tree as published -- RoboSense
-  scans, Basler images and the ~50 Hz twist commands, each on its own clock;
+  scans, camera images and the ~50 Hz twist commands, each on its own clock;
 - KISS-ICP odometry, scored against FoMo's GNSS-PPK `gt.txt` (ATE);
-- masks computed **at the camera instant**: `synchronize()` picks the nearest
-  scan and interpolates the pose at the image timestamp, and the scan is moved
-  by the motion between the two before projection;
-- the export: image (video), mask (lossless PNG), pose in `base_link`, command
-  as `action`, snow depth and air temperature per episode.
+- per-point RoboSense labels of the future and the past driven footprint;
+- one mask per frame of each camera, computed **at the camera instant** from
+  the scans and the camera stamps of the bucket listing (no image needed):
+  future footprint for the forward ZED X left/right, past footprint for the
+  rear-facing Basler;
+- `apairo-fomo verify`, which re-checks the published tables against FoMo's
+  raw files (stamps, point counts, camera geometry, lidar/mask agreement).
 
-`fomo/calibration.py` documents two traps in the shipped calibration (the
-Basler intrinsics and the frame of the lidar-camera extrinsic), both checked by
-projecting scans onto images.
+`fomo/calibration.py` documents the rig as checked by projecting scans onto
+images: the robot drives along the RoboSense -x axis, the ZED X looks forward
+and the Basler looks backward, the extrinsics of `calib/transforms.json` are
+read literally, and the camera intrinsics shipped in the bucket are
+placeholders replaced by the factory calibrations of the FoMo SDK.
 
 ```bash
-apairo-fomo list --color red                       # 12 trajectories, 12-32 GB each
+apairo-fomo list --color red                       # 12 trajectories, 8-21 GB of scans each
 apairo-fomo run --root ~/data/fomo --color red --drop-lidar
-apairo-fomo export ~/data/fomo --out ~/data/fomo_lerobot             # local build
-apairo-fomo export ~/data/fomo --out ~/data/fomo_lerobot --push      # to the Hub
+apairo-fomo export-labels ~/data/fomo --out ~/data/fomo_labels       # robosense/
+apairo-fomo export-masks ~/data/fomo --out ~/data/fomo_labels        # zedx_left/, zedx_right/, basler/
+apairo-fomo verify 2024-11-21/red_2024-11-21-10-34 --labels ~/data/fomo_labels
 ```
 
-`run` downloads, then processes, one trajectory at a time and skips those with
-an `apairo_fomo_report.json`, so it resumes after an interruption.
-`--drop-lidar` deletes the scans once labelled (the export does not need them).
-On a 22-core laptop, one trajectory takes ~8 min of odometry, 2 min of scan
-labels and 5 min of masks, plus the download.
+`run` downloads (scans, calibration, metadata), then processes, one
+trajectory at a time and skips those with an `apairo_fomo_report.json`, so it
+resumes after an interruption. `--drop-lidar` deletes the scans once
+labelled. `scripts/fomo_labels_pipeline.py` rebuilds the labels of
+already-processed trajectories one at a time (scans downloaded, used,
+deleted). The older `apairo-fomo export` (LeRobot images + masks) remains
+for reference; its Basler-based product is withdrawn
+(`hub/fomo_dataset_card.md`).
 
 ## Install
 

@@ -61,7 +61,11 @@ def fetch(key, size, dest_root):
     raise RuntimeError(f"failed {key}: size mismatch")
 
 
-SENSORS = ("calib", "metadata", "robosense", "basler")
+SENSORS = ("calib", "metadata", "robosense")
+"""Default subdirs of a trajectory: the labels need the lidar scans, the
+calibration and the metadata. Camera masks need only the camera stamps (from
+the bucket listing), never the images; pass e.g. ``subdirs=(..., "zedx_left")``
+to download images."""
 
 
 def catalog() -> dict:

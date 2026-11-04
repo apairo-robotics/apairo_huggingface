@@ -7,14 +7,18 @@ is computed **at the camera instant**, not borrowed from the nearest scan:
 1. ``odometry``    KISS-ICP (deskewed with per-point time) -> ``kissicp_poses``,
                    one ``T_world_lidar`` per scan.
 2. ``label_scans`` per-point labels inside the future footprint ->
-                   ``trav_traj``, on the lidar clock.
-3. ``label_images`` for each Basler frame, ``synchronize()`` picks the nearest
+                   ``trav_traj``, and inside the past footprint ->
+                   ``trav_traj_past``, on the lidar clock.
+3. ``label_images`` for each camera frame, ``synchronize()`` picks the nearest
                    scan (and its labels) and *interpolates* the pose at the
                    frame's own timestamp. The scan is moved by the motion
                    between its stamp and the frame's (``inv(T_cam) @ T_scan``),
-                   projected through the distorted Basler model, splatted, and
-                   the driven corridor is drawn on top -> ``trav_mask``, on the
-                   camera clock.
+                   projected through the camera's distorted model, splatted,
+                   and the footprint ribbon is drawn on top -> one mask channel
+                   per camera (``config.TRAV_MASKS``), on the camera clock.
+                   The frame stamps come from the bucket listing, so no image
+                   is needed. Forward ZED X cameras get the future footprint;
+                   the Basler looks backward and gets the past one.
 
 The FoMo tree is read through a declaration passed at load time; only the
 derived channels and apairo's ``.apairo/`` registry are written into it.
@@ -40,7 +44,7 @@ from apairo_preprocess import (
 from apairo_transform.interp import Se3Interp
 
 from . import config
-from .calibration import BASLER, IMAGE_HEIGHT, IMAGE_WIDTH, camera_from_lidar
+from .calibration import FOOTPRINT, IMAGE_HEIGHT, IMAGE_WIDTH, INTRINSICS, camera_from_lidar
 
 logger = logging.getLogger(__name__)
 
@@ -93,20 +97,31 @@ def load_poses(ds: RawDataset) -> tuple[np.ndarray, np.ndarray]:
 
 # ------------------------------------------------------------- scan labels
 
-def label_scans(traj_dir, *, overwrite: bool = False, chunk: int = 128) -> None:
-    """``trav_traj``: per-point future-footprint labels, one file per scan."""
+def label_scans(traj_dir, *, footprint: str = "future", overwrite: bool = False,
+                chunk: int = 128) -> None:
+    """Per-point footprint labels, one file per scan.
+
+    ``footprint="future"`` -> ``trav_traj``: points under the footprint swept
+    along the trajectory *ahead* of each scan. ``"past"`` -> ``trav_traj_past``:
+    the same along the trajectory *behind* it (the labeler run on the scans
+    in reverse order), for the rear-facing camera.
+    """
     traj_dir = Path(traj_dir)
-    if (traj_dir / config.TRAV_TRAJ / "timestamps.txt").exists() and not overwrite:
-        logger.info("%s: %s exists, skipping", traj_dir.name, config.TRAV_TRAJ)
+    channel = config.POINT_LABELS[footprint]
+    if (traj_dir / channel / "timestamps.txt").exists() and not overwrite:
+        logger.info("%s: %s exists, skipping", traj_dir.name, channel)
         return
-    _drop(traj_dir, config.TRAV_TRAJ)
+    _drop(traj_dir, channel)
 
     ds = open_trajectory(traj_dir, [config.LIDAR, config.POSES])
     poses, poses_ts = load_poses(ds)
     lidar_ts = np.asarray(ds.timestamps[config.LIDAR], dtype=np.float64)
     if len(poses) != len(lidar_ts) or np.abs(poses_ts - lidar_ts).max() > 1e-3:
         raise ValueError(f"{config.POSES} is not on the {config.LIDAR} clock")
-    traj = poses[:, :3, 3]
+    n = len(lidar_ts)
+    # Processing order: time order for the future footprint, reversed for the past.
+    order = np.arange(n) if footprint == "future" else np.arange(n)[::-1]
+    traj = poses[order, :3, 3]
     path = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(traj, axis=0), axis=1))])
     labeler = TraversabilityFromTrajectory(
         robot_radius=config.ROBOT_HALF_WIDTH,
@@ -115,38 +130,71 @@ def label_scans(traj_dir, *, overwrite: bool = False, chunk: int = 128) -> None:
         forward_distance=config.FORWARD_DISTANCE,
     )
     lidar = ds.loaders[config.LIDAR]
-    n = len(lidar_ts)
+    tmp = traj_dir / f"{channel}.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
+    for a in range(0, n, chunk):
+        b = min(a + chunk, n)
+        # Labels depend on the poses ahead (in processing order) only: a
+        # pose-only tail covering the look-ahead makes chunked labels equal
+        # whole-sequence ones.
+        tail = min(n, int(np.searchsorted(path, path[b - 1] + config.FORWARD_DISTANCE)) + 1)
+        frames = [Sample(data={"lidar": np.asarray(lidar[order[r]])[:, :3], "poses": poses[order[r]]})
+                  for r in range(a, b)]
+        frames += [Sample(data={"lidar": _EMPTY_SCAN, "poses": poses[order[r]]}) for r in range(b, tail)]
+        labels = labeler(iter(frames))[: b - a]
+        for r, lab in zip(range(a, b), labels):
+            np.save(tmp / f"{order[r]:06d}.npy", np.asarray(lab, dtype=np.uint8))
+        logger.info("%s: %s scans [%d, %d) / %d", traj_dir.name, channel, a, b, n)
+    # Written in processing order, registered in time order.
     with ChannelWriter(
-        traj_dir, config.TRAV_TRAJ, loader="npys",
+        traj_dir, channel, loader="npys",
         timestamps_from=config.LIDAR, sources=[config.LIDAR, config.POSES],
     ) as writer:
-        for a in range(0, n, chunk):
-            b = min(a + chunk, n)
-            # Labels depend on future poses only: a pose-only tail covering the
-            # look-ahead makes chunked labels equal whole-sequence ones.
-            tail = min(n, int(np.searchsorted(path, path[b - 1] + config.FORWARD_DISTANCE)) + 1)
-            scans = [np.asarray(lidar[i])[:, :3] for i in range(a, b)]
-            frames = [Sample(data={"lidar": s, "poses": poses[i]}) for i, s in zip(range(a, b), scans)]
-            frames += [Sample(data={"lidar": _EMPTY_SCAN, "poses": poses[i]}) for i in range(b, tail)]
-            labels = labeler(iter(frames))[: b - a]
-            for i, lab in zip(range(a, b), labels):
-                writer.add(np.asarray(lab, dtype=np.uint8), stem=f"{i:06d}", timestamp=float(lidar_ts[i]))
-            logger.info("%s: scans [%d, %d) / %d", traj_dir.name, a, b, n)
+        for i in range(n):
+            writer.add(np.load(tmp / f"{i:06d}.npy"), stem=f"{i:06d}", timestamp=float(lidar_ts[i]))
+    shutil.rmtree(tmp)
+
+
+def check_scans(traj_dir) -> int:
+    """Check that the raw scans on disk are the ones ``trav_traj`` labelled.
+
+    Same stamps (file names vs ``trav_traj/timestamps.txt``) and, scan by scan,
+    as many records as labels (file size / record size vs label length).
+    Returns the number of scans; raises ``ValueError`` on any mismatch.
+    """
+    from .format import RECORD
+
+    traj_dir = Path(traj_dir)
+    files = sorted((traj_dir / config.LIDAR).glob("*.bin"))
+    labels_dir = traj_dir / config.TRAV_TRAJ
+    stamps = np.round(np.loadtxt(labels_dir / "timestamps.txt", ndmin=1) * 1e6).astype(np.int64)
+    file_stamps = np.array([int(f.stem) for f in files], dtype=np.int64)
+    if len(file_stamps) != len(stamps) or not np.array_equal(np.sort(file_stamps), stamps):
+        raise ValueError(f"{traj_dir.name}: {len(files)} scans on disk, {len(stamps)} labelled, "
+                         "stamps differ")
+    for i, f in enumerate(sorted(files, key=lambda f: int(f.stem))):
+        size = f.stat().st_size
+        n_labels = np.load(labels_dir / f"{i:06d}.npy", mmap_mode="r").shape[0]
+        if size % RECORD.itemsize or size // RECORD.itemsize != n_labels:
+            raise ValueError(f"{traj_dir.name}: {f.name} holds {size / RECORD.itemsize:g} points, "
+                             f"{n_labels} labels")
+    return len(files)
 
 
 # ------------------------------------------------------------ image labels
 
-def _project_unclipped(points_cam: np.ndarray):
+def _project_unclipped(points_cam: np.ndarray, intrinsics=INTRINSICS[config.CAMERA]):
     """Pixel coordinates of camera-frame points through the distorted model."""
     z = points_cam[:, 2]
     with np.errstate(divide="ignore", invalid="ignore"):
         x, y = points_cam[:, 0] / z, points_cam[:, 1] / z
-    k1, k2, p1, p2, k3 = BASLER.distortion
+    k1, k2, p1, p2, k3 = intrinsics.distortion
     r2 = x * x + y * y
     radial = 1 + k1 * r2 + k2 * r2 * r2 + k3 * r2 ** 3
     xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
     yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
-    K = BASLER.K
+    K = intrinsics.K
     return K[0, 0] * xd + K[0, 2], K[1, 1] * yd + K[1, 2], z
 
 
@@ -178,7 +226,8 @@ def corridor_world(traj: np.ndarray, start: np.ndarray, step: float = 0.3):
             np.column_stack([x - hw * lx, y - hw * ly, z]))
 
 
-def corridor_mask(left_w, right_w, cam_from_world, uv_lidar, *, bin_px=16, margin=1.0):
+def corridor_mask(left_w, right_w, cam_from_world, uv_lidar, *, bin_px=16, margin=1.0,
+                  intrinsics=INTRINSICS[config.CAMERA]):
     """(H, W) bool: the corridor as filled quads, skipping occluded ones."""
     mask = Image.new("L", (IMAGE_WIDTH, IMAGE_HEIGHT), 0)
     if len(left_w) < 2:
@@ -187,8 +236,8 @@ def corridor_mask(left_w, right_w, cam_from_world, uv_lidar, *, bin_px=16, margi
     def to_cam(p):
         return p @ cam_from_world[:3, :3].T + cam_from_world[:3, 3]
 
-    ul, vl, zl = _project_unclipped(to_cam(left_w))
-    ur, vr, zr = _project_unclipped(to_cam(right_w))
+    ul, vl, zl = _project_unclipped(to_cam(left_w), intrinsics)
+    ur, vr, zr = _project_unclipped(to_cam(right_w), intrinsics)
     bx, by = -(-IMAGE_WIDTH // bin_px), -(-IMAGE_HEIGHT // bin_px)
     nearest = np.full(by * bx, np.inf)
     ok = np.isfinite(uv_lidar[:, 0])
@@ -213,24 +262,54 @@ def corridor_mask(left_w, right_w, cam_from_world, uv_lidar, *, bin_px=16, margi
     return np.asarray(mask, dtype=bool)
 
 
-def label_images(traj_dir, *, overwrite: bool = False, limit: int | None = None) -> int:
-    """``trav_mask``: one PNG per Basler frame that has a scan within tolerance."""
-    traj_dir = Path(traj_dir)
-    out_dir = traj_dir / config.TRAV_MASK
-    if (out_dir / "timestamps.txt").exists() and not overwrite:
-        logger.info("%s: %s exists, skipping", traj_dir.name, config.TRAV_MASK)
-        return 0
-    _drop(traj_dir, config.TRAV_MASK)
+def camera_stamps(traj: str, camera: str) -> np.ndarray:
+    """Sorted microsecond stamps of a camera's raw images, from the bucket listing.
 
-    ds = open_trajectory(traj_dir, [config.CAMERA, config.LIDAR, config.TRAV_TRAJ, config.POSES])
+    The masks need the camera geometry and its frame instants, not the pixels.
+    """
+    from .fetch import list_keys
+
+    keys = list_keys(f"data/{traj}/{camera}/")
+    return np.array(sorted(int(Path(k).stem) for k, _ in keys if k.endswith(".png")), dtype=np.int64)
+
+
+def label_images(traj_dir, *, camera: str = config.CAMERA, stamps_us=None,
+                 overwrite: bool = False, limit: int | None = None) -> int:
+    """``config.TRAV_MASKS[camera]``: one PNG per camera frame with a scan within tolerance.
+
+    ``stamps_us`` are the camera's frame stamps (e.g. :func:`camera_stamps`);
+    by default they are read from the camera images on disk. Each mask is
+    named by the raw image's microsecond stamp, so it joins with FoMo's own
+    ``<camera>/<us>.png``. The footprint is the one the camera can see
+    (``calibration.FOOTPRINT``): future for the forward ZED X, past for the
+    rear Basler.
+    """
+    traj_dir = Path(traj_dir)
+    channel = config.TRAV_MASKS[camera]
+    footprint = FOOTPRINT[camera]
+    point_labels = config.POINT_LABELS[footprint]
+    intrinsics = INTRINSICS[camera]
+    out_dir = traj_dir / channel
+    if (out_dir / "timestamps.txt").exists() and not overwrite:
+        logger.info("%s: %s exists, skipping", traj_dir.name, channel)
+        return 0
+    _drop(traj_dir, channel)
+
+    keys = [config.LIDAR, point_labels, config.POSES]
+    if stamps_us is None:
+        ds = open_trajectory(traj_dir, [camera, *keys])
+        stamps_us = np.round(np.asarray(ds.timestamps[camera], dtype=np.float64) * 1e6).astype(np.int64)
+    else:
+        ds = open_trajectory(traj_dir, keys)
+        stamps_us = np.asarray(stamps_us, dtype=np.int64)
     poses, poses_ts = load_poses(ds)
     # The camera clock is the reference: each frame gets the nearest scan and
     # its labels, and the pose *at the frame's own instant*.
     sync = ds.synchronize(
-        reference=config.CAMERA,
+        reference=stamps_us * 1e-6,
         method={
             config.LIDAR: "nearest",
-            config.TRAV_TRAJ: "nearest",
+            point_labels: "nearest",
             config.POSES: Se3Interp(),
         },
         # One scalar for every channel: the 10 Hz poses bracket a frame with
@@ -239,15 +318,17 @@ def label_images(traj_dir, *, overwrite: bool = False, limit: int | None = None)
     )
     scan_of = np.asarray(sync.frame_indices[config.LIDAR])
     fresh = np.abs(sync.time_offsets(config.LIDAR)) <= config.TOLERANCE
-    E = camera_from_lidar(traj_dir)
-    projector = LidarCameraProjection(intrinsics=BASLER, extrinsics=E, lidar_key="lidar")
+    E = camera_from_lidar(traj_dir, camera)
+    projector = LidarCameraProjection(intrinsics=intrinsics, extrinsics=E, lidar_key="lidar")
     masker = ImageMaskFromPointLabels(
         image_size=(IMAGE_HEIGHT, IMAGE_WIDTH),
         radius=config.SPLAT_RADIUS,
         occlusion_bin_px=config.OCCLUSION_BIN_PX,
     )
     traj = poses[:, :3, 3]
-    out_dir.mkdir()
+    tmp = traj_dir / f"{channel}.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
     stamps = []
     n = len(sync) if limit is None else min(limit, len(sync))
     for k in range(n):
@@ -255,25 +336,27 @@ def label_images(traj_dir, *, overwrite: bool = False, limit: int | None = None)
             continue
         sample = sync[k]
         t_cam = float(sample.timestamp)
+        us = int(stamps_us[np.argmin(np.abs(stamps_us - round(t_cam * 1e6)))])
         j = int(scan_of[k])
         T_cam = np.asarray(sample.data[config.POSES], dtype=np.float64)  # world <- lidar @ t_cam
         motion = np.linalg.inv(T_cam) @ poses[j]                         # lidar@t_cam <- lidar@t_scan
         pts = np.asarray(sample.data[config.LIDAR])[:, :3].astype(np.float64)
         pts = pts @ motion[:3, :3].T + motion[:3, 3]
         uv = projector(Sample(data={"lidar": pts.astype(np.float32)}))
-        mask = masker(Sample(data={"trav_traj": sample.data[config.TRAV_TRAJ], "lidar_uv": uv}))
-        future = traj[np.searchsorted(poses_ts, t_cam, side="right"):]
-        left, right = corridor_world(future, T_cam[:3, 3])
-        mask[corridor_mask(left, right, E @ np.linalg.inv(T_cam), uv)] = 1
-        stem = f"{k:06d}"
-        Image.fromarray(mask, mode="L").save(out_dir / f"{stem}.png")
-        stamps.append(t_cam)
-        if k % 200 == 0:
-            logger.info("%s: frames %d / %d", traj_dir.name, k, n)
-    np.savetxt(out_dir / "timestamps.txt", np.asarray(stamps), fmt="%.6f")
+        mask = masker(Sample(data={"trav_traj": sample.data[point_labels], "lidar_uv": uv}))
+        now = int(np.searchsorted(poses_ts, t_cam, side="right"))
+        path = traj[now:] if footprint == "future" else traj[:now][::-1]
+        left, right = corridor_world(path, T_cam[:3, 3])
+        mask[corridor_mask(left, right, E @ np.linalg.inv(T_cam), uv, intrinsics=intrinsics)] = 1
+        Image.fromarray(mask, mode="L").save(tmp / f"{us}.png")
+        stamps.append(us)
+        if k % 500 == 0:
+            logger.info("%s: %s frames %d / %d", traj_dir.name, channel, k, n)
+    np.savetxt(tmp / "timestamps.txt", np.asarray(stamps) * 1e-6, fmt="%.6f")
+    tmp.rename(out_dir)
     RawDataset.register_channel(
-        traj_dir, config.TRAV_MASK, "img",
-        sources=[config.TRAV_TRAJ, config.POSES, config.LIDAR],
+        traj_dir, channel, "img",
+        sources=[point_labels, config.POSES, config.LIDAR],
     )
-    logger.info("%s: %d image masks", traj_dir.name, len(stamps))
+    logger.info("%s: %d %s masks (%s footprint)", traj_dir.name, len(stamps), camera, footprint)
     return len(stamps)

@@ -1,7 +1,8 @@
 """FoMo trajectories -> one LeRobotDataset, one episode per trajectory.
 
 Three clocks meet here and apairo aligns them lazily: each frame is a real
-Basler image (10 Hz) with its camera-clocked ``trav_mask``, the twist command
+camera image (default: the forward ZED X left) with its camera-clocked mask
+(``config.TRAV_MASKS[camera]``), the twist command
 in force at that instant (``previous`` on the ~50 Hz ``cmd_velocity``), and
 the KISS-ICP pose *interpolated* at the image timestamp.
 
@@ -12,7 +13,6 @@ pose of the trajectory, so every episode starts at the identity.
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 
 import numpy as np
@@ -31,33 +31,40 @@ STATE_NAMES = ["x", "y", "z", "qx", "qy", "qz", "qw"]
 ACTION_NAMES = ["linear_velocity", "angular_velocity"]
 ENV_NAMES = ["snow_depth_m", "air_temperature_c"]
 
-EXCLUDED = (
-    "2025-01-29/red_2025-01-30-09-58",
-)
-"""Trajectories (``<deployment>/<trajectory>``) left out of the image dataset.
-
-``2025-01-29/red_2025-01-30-09-58`` (-24 degC): every Basler image is pure
-white, the camera saturated in the cold. Its masks cannot be checked against
-the image and the RGB observation carries no information, so the episode is
-useless for image learning. Its lidar labels are unaffected (they do not depend
-on the camera) and stay in the point-label companion.
-"""
+# A trajectory whose camera is saturated carries no image information (the
+# Basler of 2025-01-29, -24 degC, is pure white). The decision is measured on
+# the images of the exported camera, never taken from a list of names.
+SATURATED_LEVEL = 250         # a pixel is saturated when all of R, G, B reach it
+MAX_SATURATED_SHARE = 0.5     # exclude above this share of saturated pixels
+QUALITY_SAMPLES = 50          # frames sampled evenly along the trajectory
 
 
-def excluded(traj_dir) -> bool:
-    """True if ``traj_dir`` (``.../<deployment>/<trajectory>``) is in :data:`EXCLUDED`."""
-    traj_dir = Path(traj_dir)
-    return f"{traj_dir.parent.name}/{traj_dir.name}" in EXCLUDED
+def image_quality(traj_dir, camera: str = config.CAMERA, samples: int = QUALITY_SAMPLES) -> dict:
+    """Mean intensity and saturated-pixel share over frames sampled evenly."""
+    files = sorted((Path(traj_dir) / camera).glob("*.png"))
+    if not files:
+        raise FileNotFoundError(f"no {camera} image under {traj_dir}")
+    picks = [files[i] for i in np.linspace(0, len(files) - 1, min(samples, len(files))).astype(int)]
+    means, saturated = [], []
+    for f in picks:
+        rgb = np.asarray(Image.open(f).convert("RGB"))
+        means.append(rgb.mean())
+        saturated.append((rgb >= SATURATED_LEVEL).all(axis=2).mean())
+    return {"camera": camera, "frames": len(picks), "mean_intensity": float(np.mean(means)),
+            "saturated_share": float(np.mean(saturated))}
+
+
+def excluded(traj_dir, camera: str = config.CAMERA) -> bool:
+    """True if ``camera`` is saturated on ``traj_dir`` (see :func:`image_quality`)."""
+    return image_quality(traj_dir, camera)["saturated_share"] > MAX_SATURATED_SHARE
 
 
 # ------------------------------------------------------------------ helpers
 
 def _base_from_lidar(traj_dir: Path) -> np.ndarray:
-    from .calibration import _transform
+    from .calibration import transforms
 
-    entries = json.loads((traj_dir / "calib" / "transforms.json").read_text())
-    tf = {(e["from"], e["to"]): _transform(e) for e in entries}
-    return tf[("base_link", "robosense")]
+    return transforms(traj_dir)[("base_link", config.LIDAR)]
 
 
 def _quat_xyzw(R: np.ndarray) -> np.ndarray:
@@ -94,15 +101,14 @@ def environment(traj_dir: Path) -> np.ndarray:
 
 # ------------------------------------------------------------------- frames
 
-def aligned(traj_dir):
+def aligned(traj_dir, camera: str = config.CAMERA):
     """The synchronized view of one trajectory on the mask (camera) clock."""
-    ds = open_trajectory(
-        traj_dir, [config.TRAV_MASK, config.CAMERA, "cmd_velocity", config.POSES]
-    )
+    mask = config.TRAV_MASKS[camera]
+    ds = open_trajectory(traj_dir, [mask, camera, "cmd_velocity", config.POSES])
     return ds.synchronize(
-        reference=config.TRAV_MASK,
+        reference=mask,
         method={
-            config.CAMERA: "nearest",           # the mask's own image: same stamp
+            camera: "nearest",                  # the mask's own image: same stamp
             "cmd_velocity": "previous",         # the command in force
             config.POSES: Se3Interp(),          # the pose at the image instant
         },
@@ -110,17 +116,17 @@ def aligned(traj_dir):
     )
 
 
-def frames(traj_dir):
+def frames(traj_dir, camera: str = config.CAMERA):
     """Yield LeRobot frame dicts for one trajectory."""
     traj_dir = Path(traj_dir)
-    sync = aligned(traj_dir)
+    sync = aligned(traj_dir, camera)
     base_from_lidar = _base_from_lidar(traj_dir)
     lidar_from_base = np.linalg.inv(base_from_lidar)
     ds_poses, poses_ts = load_poses(open_trajectory(traj_dir, [config.POSES]))
     path = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ds_poses[:, :3, 3], axis=0), axis=1))])
     origin = None
     env = environment(traj_dir)
-    stale = np.abs(sync.time_offsets(config.CAMERA)) > 1e-3
+    stale = np.abs(sync.time_offsets(camera)) > 1e-3
     for k in range(len(sync)):
         if stale[k]:
             continue
@@ -133,8 +139,8 @@ def frames(traj_dir):
         if origin is None:
             origin = np.linalg.inv(world_base)
         pose = origin @ world_base
-        image = Image.fromarray(np.asarray(sample.data[config.CAMERA]))
-        mask = np.asarray(sample.data[config.TRAV_MASK])
+        image = Image.fromarray(np.asarray(sample.data[camera])[..., :3])  # ZED PNGs are RGBA
+        mask = np.asarray(sample.data[config.TRAV_MASKS[camera]])
         if mask.ndim == 3:
             mask = mask[..., 0]
         size = (image.width // DOWNSCALE, image.height // DOWNSCALE)
@@ -166,19 +172,20 @@ def features(height: int, width: int) -> dict:
     }
 
 
-def to_lerobot(traj_dirs, repo_id: str, *, root=None, push: bool = False):
+def to_lerobot(traj_dirs, repo_id: str, *, camera: str = config.CAMERA, root=None,
+               push: bool = False):
     """Write the trajectories to a LeRobotDataset (one episode each)."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     traj_dirs = [Path(t) for t in traj_dirs]
-    probe = next(frames(traj_dirs[0]))
+    probe = next(frames(traj_dirs[0], camera))
     h, w, _ = probe["observation.images.front"].shape
     dataset = LeRobotDataset.create(
         repo_id=repo_id, fps=FPS, features=features(h, w),
         robot_type=ROBOT_TYPE, root=root,
     )
     for traj in traj_dirs:
-        for frame in frames(traj):
+        for frame in frames(traj, camera):
             dataset.add_frame(frame)
         dataset.save_episode()
     dataset.finalize()

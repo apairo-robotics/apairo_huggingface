@@ -10,13 +10,15 @@ the raw FoMo scan rebuilds the mask with :func:`mask`.
 
 Layout::
 
-    <out>/data/<deployment>/<trajectory>.parquet
+    <out>/robosense/<deployment>/<trajectory>.parquet
 
 Columns: ``trajectory`` (``<deployment>/<trajectory>``), ``scan_stem``
 (``NNNNNN``, the scan's rank in the trajectory), ``robosense_file``
 (``<us>.bin``), ``timestamp_us`` (int64, the file's microsecond stamp),
 ``n_points`` (int32), ``driven_indices`` (list<int32>), ``pose`` (16 float64,
-row-major ``T_world_lidar``, KISS-ICP, world = the first scan's lidar frame).
+row-major ``T_world_lidar``, KISS-ICP, world = the first scan's lidar frame),
+and, when ``trav_traj_past`` exists, ``driven_indices_past`` (list<int32>, the
+points under the footprint swept along the trajectory *behind* the scan).
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ def trajectory_table(traj_dir):
         n_points.append(len(lab))
         driven.append(np.flatnonzero(lab == 1).astype(np.int32))
         poses.append(np.load(poses_dir / f"{stem}.npy").astype(np.float64).reshape(16))
-    return pa.table({
+    columns = {
         "trajectory": pa.array([name] * len(stems), pa.string()),
         "scan_stem": pa.array(stems, pa.string()),
         "robosense_file": pa.array([f"{t}.bin" for t in stamps], pa.string()),
@@ -69,18 +71,30 @@ def trajectory_table(traj_dir):
         "n_points": pa.array(n_points, pa.int32()),
         "driven_indices": pa.array(driven, pa.list_(pa.int32())),
         "pose": pa.array(poses, pa.list_(pa.float64(), 16)),
-    })
+    }
+    past_dir = traj_dir / config.TRAV_TRAJ_PAST
+    if (past_dir / "timestamps.txt").exists():
+        if not np.array_equal(stamps, _stamps_us(past_dir / "timestamps.txt")):
+            raise ValueError(f"{name}: {config.TRAV_TRAJ_PAST} is not on the {config.TRAV_TRAJ} clock")
+        past = []
+        for stem, n in zip(stems, n_points):
+            lab = np.load(past_dir / f"{stem}.npy")
+            if len(lab) != n:
+                raise ValueError(f"{name}: {config.TRAV_TRAJ_PAST}/{stem} has {len(lab)} labels, not {n}")
+            past.append(np.flatnonzero(lab == 1).astype(np.int32))
+        columns["driven_indices_past"] = pa.array(past, pa.list_(pa.int32()))
+    return pa.table(columns)
 
 
 def export(traj_dirs, out) -> list[Path]:
-    """Write one parquet per trajectory under ``<out>/data/``; return the paths."""
+    """Write one parquet per trajectory under ``<out>/robosense/``; return the paths."""
     import pyarrow.parquet as pq
 
     out = Path(out)
     written = []
     for traj in map(Path, traj_dirs):
         table = trajectory_table(traj)
-        path = out / "data" / traj.parent.name / f"{traj.name}.parquet"
+        path = out / config.LIDAR / traj.parent.name / f"{traj.name}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(table, path, compression="zstd")
         logger.info("%s/%s: %d scans -> %s (%.1f MB)", traj.parent.name, traj.name,

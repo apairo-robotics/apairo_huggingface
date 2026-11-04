@@ -31,7 +31,7 @@ def test_masks_rebuilt_from_the_indices_equal_the_original_labels(tmp_path, traj
     out = tmp_path / "out"
     main(["export-labels", str(tmp_path / "fomo"), "--out", str(out)])
 
-    table = pq.read_table(out / "data" / "2025-10-14" / "red_2025-10-14-11-41.parquet").to_pylist()
+    table = pq.read_table(out / "robosense" / "2025-10-14" / "red_2025-10-14-11-41.parquet").to_pylist()
     assert [r["robosense_file"] for r in table] == [f"{t}.bin" for t in STAMPS_US]
     assert [r["scan_stem"] for r in table] == ["000000", "000001", "000002"]
     for row, (lab, pose) in zip(table, labels):

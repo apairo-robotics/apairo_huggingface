@@ -5,11 +5,24 @@ from __future__ import annotations
 from .calibration import LIDAR_HEIGHT
 
 LIDAR = "robosense"
-CAMERA = "basler"
+CAMERA = "zedx_left"          # default camera: the forward ZED X left
+CAMERAS = ("zedx_left", "zedx_right", "basler")
 POSES = "kissicp_poses"       # per-scan T_world_lidar, written by KISS-ICP
-TRAV_TRAJ = "trav_traj"       # per-point labels, on the lidar clock
-TRAV_MASK = "trav_mask"       # (H, W) uint8 PNG, on the *camera* clock
-                              # 1 driven / 0 lidar-seen, not driven / 255 no data
+TRAV_TRAJ = "trav_traj"       # per-point labels, FUTURE footprint, lidar clock
+TRAV_TRAJ_PAST = "trav_traj_past"  # per-point labels, PAST footprint, lidar clock
+POINT_LABELS = {"future": TRAV_TRAJ, "past": TRAV_TRAJ_PAST}
+
+# Image masks: (H, W) uint8 PNG per camera frame, named by the raw image's
+# microsecond stamp, 1 driven / 0 lidar-seen, not driven / 255 no data.
+# Forward cameras carry the future footprint, the rear Basler the past one
+# (calibration.FOOTPRINT). ``trav_mask`` (older Basler masks built with a
+# flipped extrinsic) is not one of them.
+TRAV_MASKS = {
+    "zedx_left": "trav_mask_zedx_left",
+    "zedx_right": "trav_mask_zedx_right",
+    "basler": "trav_past_mask_basler",
+}
+TRAV_MASK = TRAV_MASKS[CAMERA]
 
 # KISS-ICP on the RoboSense (128 rings, ~170k points, per-point time).
 ODOM_MAX_RANGE = 80.0
@@ -27,7 +40,7 @@ GROUND_OFFSET = -LIDAR_HEIGHT  # corridor height relative to the pose
 SPLAT_RADIUS = 2
 OCCLUSION_BIN_PX = 8
 
-# Camera <- lidar matching. Basler and RoboSense run at 10 Hz on their own
-# triggers (~16 ms apart); a frame with no scan within half a period is dropped.
+# Camera <- lidar matching. Cameras and RoboSense run on their own triggers
+# (lidar 10 Hz); a frame with no scan within half a lidar period is dropped.
 TOLERANCE = 0.05
 POSE_TOLERANCE = 0.15        # bracketing poses of an interpolated frame
