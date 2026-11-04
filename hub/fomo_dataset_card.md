@@ -17,6 +17,14 @@ pretty_name: FoMo Multi-Season Traversability (LeRobot format)
 
 # FoMo Multi-Season Traversability - LeRobotDataset
 
+> **Withdrawn - do not use.** The masks of this export were projected into
+> the Basler camera with a 180-degree-flipped extrinsic. The Basler looks
+> *backward* (see `fomo/calibration.py`), so it never sees the future driven
+> corridor, and the masks below do not match the images. The labels are
+> rebuilt per camera, with the correct extrinsics, as a labels-only dataset:
+> see `hub/fomo_labels_card.md`. This card is kept as the record of what the
+> withdrawn export contained.
+
 > **A derived dataset.** Eleven repetitions of the same ~300 m "red" route in
 > the Foret Montmorency boreal forest, recorded once per deployment from
 > November 2024 to November 2025 (bare ground, snow over 1 m, summer, night),
