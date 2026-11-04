@@ -1,130 +1,129 @@
-"""Browse one episode of the FoMo LeRobot export in Rerun.
+"""Browse the FoMo traversability labels of one trajectory in Rerun.
 
-Logs, per frame: the camera image, the traversability mask as a segmentation
-layer on top of it (1 driven / 0 seen, not driven / 255 no data), the pose on
-the full trajectory, the action and the environment scalars.
+The labels dataset holds no images or scans: this script joins every label
+channel with FoMo's raw files, read from a local copy (``--raw``) when present
+and otherwise fetched from the public FoMo bucket, frame by frame.
 
-Start a viewer first, e.g. on the machine holding the data:
+Logged on one timeline (the FoMo microsecond stamps):
+
+- ``<camera>/image`` + ``<camera>/mask`` for each camera: the raw image and its
+  mask as a segmentation layer (1 driven / 0 seen, not driven / 255 no data);
+  the ZED cameras carry the future footprint, the rear Basler the past one;
+- ``world/trajectory`` and ``world/robot``: the KISS-ICP poses of the scans;
+- ``world/robot/lidar`` (with ``--lidar``): the RoboSense scan coloured by its
+  future / past driven labels.
+
+Start a viewer first, e.g. on the machine holding the labels:
 
     rerun --serve-web --web-viewer-port 9090 --port 9876
 
 then:
 
-    python examples/inspect_fomo.py --root /path/to/fomo_lerobot_v2 --episode 0 --stride 5
+    python examples/inspect_fomo.py --labels /path/to/fomo_labels \\
+        --trajectory 2024-11-21/red_2024-11-21-10-34 --stride 20 --lidar
 """
 
 import argparse
 import io
-import json
 from pathlib import Path
 
-import av
 import numpy as np
 import pyarrow.parquet as pq
 import rerun as rr
 from PIL import Image
 
-VIDEO_KEY = "observation.images.front"
-MASK_KEY = "observation.traversability_mask"
+from apairo_huggingface.fomo.fetch import BUCKET, get
+from apairo_huggingface.fomo.format import RECORD
+
+CAMERAS = ("zedx_left", "zedx_right", "basler")
 # Segmentation class ids: the stored values 1 / 0 / 255 mapped to 1 / 2 / 0.
 CLASS_OF_VALUE = {1: 1, 0: 2, 255: 0}
+SCALE = 2  # images and masks are logged at half resolution
 
 
-def episode_meta(root: Path, episode: int) -> dict:
-    tables = [pq.read_table(p) for p in sorted((root / "meta" / "episodes").rglob("*.parquet"))]
-    for t in tables:
-        for row in t.to_pylist():
-            if row["episode_index"] == episode:
-                return row
-    raise SystemExit(f"episode {episode} not found")
-
-
-def episode_rows(root: Path, info: dict, meta: dict) -> list[dict]:
-    path = root / info["data_path"].format(
-        chunk_index=meta["data/chunk_index"], file_index=meta["data/file_index"])
-    rows = pq.read_table(path).to_pylist()
-    return [r for r in rows if r["episode_index"] == meta["episode_index"]]
-
-
-def video_frames(root: Path, info: dict, meta: dict):
-    """Yield (frame_index, rgb) for the episode's span of its video file."""
-    prefix = f"videos/{VIDEO_KEY}/"
-    path = root / info["video_path"].format(
-        video_key=VIDEO_KEY,
-        chunk_index=meta[prefix + "chunk_index"], file_index=meta[prefix + "file_index"])
-    t0, t1 = meta[prefix + "from_timestamp"], meta[prefix + "to_timestamp"]
-    fps = info["fps"]
-    with av.open(str(path)) as container:
-        stream = container.streams.video[0]
-        container.seek(int(t0 / stream.time_base), stream=stream, backward=True)
-        for frame in container.decode(stream):
-            t = float(frame.pts * stream.time_base)
-            if t < t0 - 0.5 / fps:
-                continue
-            if t >= t1 - 0.5 / fps:
-                break
-            yield int(round((t - t0) * fps)), frame.to_ndarray(format="rgb24")
+def raw_file(trajectory: str, sensor: str, name: str, raw: Path | None) -> bytes:
+    if raw is not None:
+        local = raw / trajectory / sensor / name
+        if local.exists():
+            return local.read_bytes()
+    return get(f"{BUCKET}/data/{trajectory}/{sensor}/{name}")
 
 
 def mask_classes(png: bytes) -> np.ndarray:
-    values = np.asarray(Image.open(io.BytesIO(png)))[..., 0]
+    values = np.asarray(Image.open(io.BytesIO(png)))
+    if values.ndim == 3:
+        values = values[..., 0]
+    values = values[::SCALE, ::SCALE]
     out = np.zeros(values.shape, np.uint8)
     for value, cls in CLASS_OF_VALUE.items():
         out[values == value] = cls
     return out
 
 
+def jpeg(png: bytes, quality: int) -> bytes:
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    img = img.resize((img.width // SCALE, img.height // SCALE))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--root", type=Path, required=True)
-    ap.add_argument("--episode", type=int, default=0)
-    ap.add_argument("--stride", type=int, default=5, help="log every n-th frame")
+    ap.add_argument("--labels", type=Path, required=True, help="root of the labels dataset")
+    ap.add_argument("--trajectory", required=True, help="<deployment>/<trajectory>")
+    ap.add_argument("--cameras", nargs="+", default=list(CAMERAS), choices=CAMERAS)
+    ap.add_argument("--stride", type=int, default=20, help="log every n-th row of each channel")
+    ap.add_argument("--lidar", action="store_true", help="also log the labelled RoboSense scans")
+    ap.add_argument("--raw", type=Path, default=None, help="local FoMo root, tried before the bucket")
     ap.add_argument("--url", default="rerun+http://localhost:9876/proxy")
     ap.add_argument("--jpeg-quality", type=int, default=80)
     args = ap.parse_args()
 
-    info = json.loads((args.root / "meta" / "info.json").read_text())
-    meta = episode_meta(args.root, args.episode)
-    rows = episode_rows(args.root, info, meta)
-    if len(rows) != meta["length"]:
-        raise SystemExit(f"episode {args.episode}: {len(rows)} rows, meta says {meta['length']}")
-
-    rr.init(f"fomo_episode_{args.episode}")
+    deployment, name = args.trajectory.split("/")
+    rr.init(f"fomo_labels_{name}")
     rr.connect_grpc(args.url)
 
-    rr.log("camera/mask", rr.AnnotationContext([
-        (0, "no data", (0, 0, 0, 0)),
-        (1, "driven", (0, 200, 0, 255)),
-        (2, "seen, not driven", (220, 30, 30, 255)),
-    ]), static=True)
-    xyz = np.array([r["observation.state"][:3] for r in rows], np.float32)
-    rr.log("world/trajectory", rr.LineStrips3D([xyz], colors=[(120, 120, 255)]), static=True)
-    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+    def at(stamp_us: int) -> None:
+        rr.set_time("stamp", timestamp=np.datetime64(int(stamp_us), "us"))
 
-    by_index = {r["frame_index"]: r for r in rows}
-    for idx, rgb in video_frames(args.root, info, meta):
-        if idx % args.stride or idx not in by_index:
-            continue
-        r = by_index[idx]
-        rr.set_time("frame", sequence=idx)
-        rr.set_time("time", duration=float(r["timestamp"]))
-        buf = io.BytesIO()
-        Image.fromarray(rgb).save(buf, format="JPEG", quality=args.jpeg_quality)
-        rr.log("camera/image", rr.EncodedImage(contents=buf.getvalue(), media_type="image/jpeg"))
-        rr.log("camera/mask", rr.SegmentationImage(mask_classes(r[MASK_KEY]["bytes"])))
-        x, y, z, qx, qy, qz, qw = r["observation.state"]
-        rr.log("world/robot", rr.Transform3D(
-            translation=[x, y, z], rotation=rr.Quaternion(xyzw=[qx, qy, qz, qw])))
+    lidar = pq.read_table(args.labels / "robosense" / deployment / f"{name}.parquet").to_pylist()
+    poses = np.array([r["pose"] for r in lidar], np.float64).reshape(-1, 4, 4)
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+    rr.log("world/trajectory", rr.LineStrips3D([poses[:, :3, 3]], colors=[(120, 120, 255)]), static=True)
+    for k in range(0, len(lidar), args.stride):
+        r = lidar[k]
+        at(r["timestamp_us"])
+        rr.log("world/robot", rr.Transform3D(translation=poses[k, :3, 3], mat3x3=poses[k, :3, :3]))
         rr.log("world/robot/axes", rr.Arrows3D(
             vectors=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
             colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]))
-        v, w = r["action"]
-        rr.log("action/linear_velocity", rr.Scalars(v))
-        rr.log("action/angular_velocity", rr.Scalars(w))
-        snow, temp = r["observation.environment"]
-        rr.log("environment/snow_depth_m", rr.Scalars(snow))
-        rr.log("environment/air_temperature_c", rr.Scalars(temp))
-    print(f"episode {args.episode}: logged every {args.stride}th of {len(rows)} frames")
+        if args.lidar:
+            rec = np.frombuffer(raw_file(args.trajectory, "robosense", r["robosense_file"], args.raw),
+                                dtype=RECORD)
+            if len(rec) != r["n_points"]:
+                raise SystemExit(f"{r['robosense_file']}: {len(rec)} points, labels say {r['n_points']}")
+            xyz = np.column_stack([rec["x"], rec["y"], rec["z"]])
+            colors = np.full((len(rec), 3), 150, np.uint8)
+            colors[np.asarray(r["driven_indices_past"], np.int64)] = (255, 160, 0)
+            colors[np.asarray(r["driven_indices"], np.int64)] = (0, 200, 0)
+            rr.log("world/robot/lidar", rr.Points3D(xyz, colors=colors, radii=0.03))
+
+    for camera in args.cameras:
+        rows = pq.read_table(args.labels / camera / deployment / f"{name}.parquet").to_pylist()
+        footprint = rows[0]["footprint"] if rows else "?"
+        rr.log(f"{camera}/mask", rr.AnnotationContext([
+            (0, "no data", (0, 0, 0, 0)),
+            (1, f"driven ({footprint} footprint)", (0, 200, 0, 255)),
+            (2, "seen, not driven", (220, 30, 30, 255)),
+        ]), static=True)
+        for r in rows[::args.stride]:
+            at(r["timestamp_us"])
+            png = raw_file(args.trajectory, camera, r["image_file"], args.raw)
+            rr.log(f"{camera}/image", rr.EncodedImage(
+                contents=jpeg(png, args.jpeg_quality), media_type="image/jpeg"))
+            rr.log(f"{camera}/mask", rr.SegmentationImage(mask_classes(r["mask_png"])))
+        print(f"{camera}: logged every {args.stride}th of {len(rows)} masks ({footprint} footprint)")
 
 
 if __name__ == "__main__":
