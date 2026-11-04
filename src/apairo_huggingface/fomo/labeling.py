@@ -226,40 +226,52 @@ def corridor_world(traj: np.ndarray, start: np.ndarray, step: float = 0.3):
             np.column_stack([x - hw * lx, y - hw * ly, z]))
 
 
-def corridor_mask(left_w, right_w, cam_from_world, uv_lidar, *, bin_px=16, margin=1.0,
+def corridor_mask(left_w, right_w, cam_from_world, points_world, *, margin=0.5, above=0.3,
                   intrinsics=INTRINSICS[config.CAMERA]):
-    """(H, W) bool: the corridor as filled quads, skipping occluded ones."""
-    mask = Image.new("L", (IMAGE_WIDTH, IMAGE_HEIGHT), 0)
+    """(H, W) bool: the corridor as filled quads, minus the quads an obstacle hides.
+
+    A quad is hidden only by a lidar return that projects inside it, lies more
+    than ``margin`` metres in front of it and more than ``above`` metres above
+    the corridor surface there. Ground returns never hide the ground: at
+    grazing angles a nearer ground return shares the pixels of a farther quad.
+    Far quads are drawn first, so where two quads overlap in the image the
+    nearer one owns the pixels.
+    """
+    empty = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH), dtype=bool)
     if len(left_w) < 2:
-        return np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH), dtype=bool)
+        return empty
 
     def to_cam(p):
         return p @ cam_from_world[:3, :3].T + cam_from_world[:3, 3]
 
     ul, vl, zl = _project_unclipped(to_cam(left_w), intrinsics)
     ur, vr, zr = _project_unclipped(to_cam(right_w), intrinsics)
-    bx, by = -(-IMAGE_WIDTH // bin_px), -(-IMAGE_HEIGHT // bin_px)
-    nearest = np.full(by * bx, np.inf)
-    ok = np.isfinite(uv_lidar[:, 0])
-    ids = (uv_lidar[ok, 1].astype(int) // bin_px) * bx + uv_lidar[ok, 0].astype(int) // bin_px
-    np.minimum.at(nearest, ids, uv_lidar[ok, 2].astype(float))
-    nearest = nearest.reshape(by, bx)
 
-    def depth_at(u, v):
-        return nearest[np.clip(int(v) // bin_px, 0, by - 1), np.clip(int(u) // bin_px, 0, bx - 1)]
+    def quad(i):
+        return [(ul[i], vl[i]), (ur[i], vr[i]), (ur[i + 1], vr[i + 1]), (ul[i + 1], vl[i + 1])]
 
-    draw = ImageDraw.Draw(mask)
-    for i in range(len(ul) - 1):
-        zs = (zl[i], zr[i], zl[i + 1], zr[i + 1])
-        if min(zs) < 0.5:
-            continue
-        quad = [(ul[i], vl[i]), (ur[i], vr[i]), (ur[i + 1], vr[i + 1]), (ul[i + 1], vl[i + 1])]
-        if not all(np.isfinite(c) for q in quad for c in q):
-            continue
-        if min(depth_at(u, v) for u, v in quad) + margin < min(zs):
-            continue
-        draw.polygon(quad, fill=1)
-    return np.asarray(mask, dtype=bool)
+    quads = [
+        i for i in range(len(ul) - 1)
+        if min(zl[i], zr[i], zl[i + 1], zr[i + 1]) >= 0.5
+        and all(np.isfinite(c) for q in quad(i) for c in q)
+    ]
+    if not quads:
+        return empty
+    ids_img = Image.new("I", (IMAGE_WIDTH, IMAGE_HEIGHT), 0)
+    draw = ImageDraw.Draw(ids_img)
+    for i in sorted(quads, key=lambda i: -(zl[i] + zr[i])):
+        draw.polygon(quad(i), fill=i + 1)
+    ids = np.asarray(ids_img, dtype=np.int64) - 1
+
+    u, v, z = _project_unclipped(to_cam(points_world), intrinsics)
+    inside = (z > 0.5) & (u >= 0) & (u < IMAGE_WIDTH) & (v >= 0) & (v < IMAGE_HEIGHT)
+    q = ids[v[inside].astype(int), u[inside].astype(int)]
+    hit = q >= 0
+    q, z_pt, h_pt = q[hit], z[inside][hit], points_world[inside][hit, 2]
+    depth = 0.25 * (zl[q] + zr[q] + zl[q + 1] + zr[q + 1])
+    ground = 0.25 * (left_w[q, 2] + right_w[q, 2] + left_w[q + 1, 2] + right_w[q + 1, 2])
+    hidden = np.unique(q[(z_pt < depth - margin) & (h_pt > ground + above)])
+    return (ids >= 0) & ~np.isin(ids, hidden)
 
 
 def camera_stamps(traj: str, camera: str) -> np.ndarray:
@@ -344,10 +356,14 @@ def label_images(traj_dir, *, camera: str = config.CAMERA, stamps_us=None,
         pts = pts @ motion[:3, :3].T + motion[:3, 3]
         uv = projector(Sample(data={"lidar": pts.astype(np.float32)}))
         mask = masker(Sample(data={"trav_traj": sample.data[point_labels], "lidar_uv": uv}))
+        # Lidar returns only say "seen"; "driven" is the geometric corridor, so
+        # ring splats never stick out of it.
+        mask[mask == 1] = 0
         now = int(np.searchsorted(poses_ts, t_cam, side="right"))
         path = traj[now:] if footprint == "future" else traj[:now][::-1]
         left, right = corridor_world(path, T_cam[:3, 3])
-        mask[corridor_mask(left, right, E @ np.linalg.inv(T_cam), uv, intrinsics=intrinsics)] = 1
+        pts_world = pts @ T_cam[:3, :3].T + T_cam[:3, 3]
+        mask[corridor_mask(left, right, E @ np.linalg.inv(T_cam), pts_world, intrinsics=intrinsics)] = 1
         Image.fromarray(mask, mode="L").save(tmp / f"{us}.png")
         stamps.append(us)
         if k % 500 == 0:
