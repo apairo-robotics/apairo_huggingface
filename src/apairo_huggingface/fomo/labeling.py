@@ -198,6 +198,16 @@ def _project_unclipped(points_cam: np.ndarray, intrinsics=INTRINSICS[config.CAME
     return K[0, 0] * xd + K[0, 2], K[1, 1] * yd + K[1, 2], z
 
 
+def _smooth(values: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian smoothing with edge padding; ``sigma`` in samples."""
+    half = int(np.ceil(3 * sigma))
+    if half == 0:
+        return values
+    kernel = np.exp(-0.5 * (np.arange(-half, half + 1) / sigma) ** 2)
+    padded = np.pad(values, half, mode="edge")
+    return np.convolve(padded, kernel / kernel.sum(), mode="valid")
+
+
 def corridor_world(traj: np.ndarray, start: np.ndarray, step: float = 0.3):
     """Left/right edges of the future footprint from ``start``, world frame."""
     empty = np.empty((0, 3))
@@ -217,6 +227,9 @@ def corridor_world(traj: np.ndarray, start: np.ndarray, step: float = 0.3):
         return empty, empty
     x, y = np.interp(s, path, pos[:, 0]), np.interp(s, path, pos[:, 1])
     z = np.interp(s, path, pos[:, 2]) + config.GROUND_OFFSET
+    # Odometry jitters by centimetres between 10 Hz poses; at grazing angles
+    # that alone makes the corridor edges zigzag in the image.
+    x, y, z = (_smooth(c, config.PATH_SMOOTHING / step) for c in (x, y, z))
     dx, dy = np.gradient(x), np.gradient(y)
     norm = np.hypot(dx, dy)
     norm[norm == 0] = 1.0

@@ -32,6 +32,7 @@ ODOM_VOXEL = 0.5
 # The platform is a Clearpath Warthog, 1.38 m wide; 0.7 m half-width.
 ROBOT_HALF_WIDTH = 0.7
 FORWARD_DISTANCE = 30.0       # look-ahead cap, metres of path
+PATH_SMOOTHING = 1.0          # gaussian sigma along the path before building the corridor, m
 # Height window of TraversabilityFromTrajectory, relative to the nearest future
 # pose (the lidar, LIDAR_HEIGHT above the ground): -0.3 m / +0.5 m around it.
 HEIGHT_MIN = -LIDAR_HEIGHT - 0.3

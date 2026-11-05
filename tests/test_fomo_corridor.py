@@ -46,3 +46,17 @@ def test_obstacle_hides_the_corridor_behind_it():
     near = _row(-6.0)
     assert clear[far].any() and not blocked[far].any()
     assert blocked[near].any()
+
+
+def test_pose_jitter_does_not_zigzag_the_edges():
+    # 10 Hz poses on a straight road, with odometry noise of a few centimetres
+    rng = np.random.default_rng(0)
+    n = 200
+    path = np.column_stack([-np.arange(1, n + 1) * 0.15,
+                            rng.normal(0, 0.03, n), rng.normal(0, 0.05, n)])
+    left, right = corridor_world(path, np.zeros(3))
+    width = np.linalg.norm(left[:, :2] - right[:, :2], axis=1)
+    assert np.allclose(width, 2 * config.ROBOT_HALF_WIDTH)
+    # the edges stay within a few centimetres of the true road, laterally and in height
+    assert np.abs(np.abs(left[:, 1]) - config.ROBOT_HALF_WIDTH).max() < 0.06
+    assert np.abs(left[:, 2] - GROUND_Z).max() < 0.06
