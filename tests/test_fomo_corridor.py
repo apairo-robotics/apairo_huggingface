@@ -15,7 +15,18 @@ ZED = INTRINSICS["zedx_left"]
 
 def _straight_corridor():
     path = np.column_stack([-np.arange(0.5, 40.0, 0.5), np.zeros(79), np.zeros(79)])
-    return corridor_world(path, np.zeros(3))
+    return corridor_world(_poses(path), np.eye(4))
+
+
+def _poses(positions, yaw=None, roll=None):
+    out = np.tile(np.eye(4), (len(positions), 1, 1))
+    out[:, :3, 3] = positions
+    for k in range(len(positions)):
+        a, b = (0.0 if yaw is None else yaw[k]), (0.0 if roll is None else roll[k])
+        rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+        rx = np.array([[1, 0, 0], [0, np.cos(b), -np.sin(b)], [0, np.sin(b), np.cos(b)]])
+        out[k, :3, :3] = rz @ rx
+    return out
 
 
 def _ground(x_max=45.0):
@@ -54,9 +65,20 @@ def test_pose_jitter_does_not_zigzag_the_edges():
     n = 200
     path = np.column_stack([-np.arange(1, n + 1) * 0.15,
                             rng.normal(0, 0.03, n), rng.normal(0, 0.05, n)])
-    left, right = corridor_world(path, np.zeros(3))
+    poses = _poses(path, yaw=rng.normal(0, np.radians(3), n), roll=rng.normal(0, np.radians(2), n))
+    left, right = corridor_world(poses, np.eye(4))
     width = np.linalg.norm(left[:, :2] - right[:, :2], axis=1)
-    assert np.allclose(width, 2 * config.ROBOT_HALF_WIDTH)
+    assert np.allclose(width, 2 * config.ROBOT_HALF_WIDTH, atol=0.02)
     # the edges stay within a few centimetres of the true road, laterally and in height
     assert np.abs(np.abs(left[:, 1]) - config.ROBOT_HALF_WIDTH).max() < 0.06
     assert np.abs(left[:, 2] - GROUND_Z).max() < 0.06
+
+
+def test_footprint_follows_the_robot_roll():
+    # on a side slope the robot rolls: one wheel line sits higher than the other
+    n = 100
+    path = np.column_stack([-np.arange(1, n + 1) * 0.3, np.zeros(n), np.zeros(n)])
+    roll = np.full(n, np.radians(10))
+    left, right = corridor_world(_poses(path, roll=roll), _poses(path[:1], roll=roll[:1])[0])
+    dz = left[:, 2] - right[:, 2]
+    assert np.allclose(dz, 2 * config.ROBOT_HALF_WIDTH * np.sin(np.radians(10)), atol=0.01)

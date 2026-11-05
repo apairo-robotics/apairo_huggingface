@@ -25,6 +25,7 @@ then:
 
 import argparse
 import io
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -87,28 +88,8 @@ def main() -> None:
     def at(stamp_us: int) -> None:
         rr.set_time("stamp", timestamp=np.datetime64(int(stamp_us), "us"))
 
-    lidar = pq.read_table(args.labels / "robosense" / deployment / f"{name}.parquet").to_pylist()
-    poses = np.array([r["pose"] for r in lidar], np.float64).reshape(-1, 4, 4)
-    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
-    rr.log("world/trajectory", rr.LineStrips3D([poses[:, :3, 3]], colors=[(120, 120, 255)]), static=True)
-    for k in range(0, len(lidar), args.stride):
-        r = lidar[k]
-        at(r["timestamp_us"])
-        rr.log("world/robot", rr.Transform3D(translation=poses[k, :3, 3], mat3x3=poses[k, :3, :3]))
-        rr.log("world/robot/axes", rr.Arrows3D(
-            vectors=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-            colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]))
-        if args.lidar:
-            rec = np.frombuffer(raw_file(args.trajectory, "robosense", r["robosense_file"], args.raw),
-                                dtype=RECORD)
-            if len(rec) != r["n_points"]:
-                raise SystemExit(f"{r['robosense_file']}: {len(rec)} points, labels say {r['n_points']}")
-            xyz = np.column_stack([rec["x"], rec["y"], rec["z"]])
-            colors = np.full((len(rec), 3), 150, np.uint8)
-            colors[np.asarray(r["driven_indices_past"], np.int64)] = (255, 160, 0)
-            colors[np.asarray(r["driven_indices"], np.int64)] = (0, 200, 0)
-            rr.log("world/robot/lidar", rr.Points3D(xyz, colors=colors, radii=0.03))
-
+    # Raw files come from the bucket at ~2 s each: fetch ahead in threads.
+    pool = ThreadPoolExecutor(8)
     for camera in args.cameras:
         rows = pq.read_table(args.labels / camera / deployment / f"{name}.parquet").to_pylist()
         footprint = rows[0]["footprint"] if rows else "?"
@@ -117,13 +98,39 @@ def main() -> None:
             (1, f"driven ({footprint} footprint)", (0, 200, 0, 255)),
             (2, "seen, not driven", (220, 30, 30, 255)),
         ]), static=True)
-        for r in rows[::args.stride]:
+        picked = rows[::args.stride]
+        pngs = pool.map(lambda r: raw_file(args.trajectory, camera, r["image_file"], args.raw), picked)
+        for r, png in zip(picked, pngs):
             at(r["timestamp_us"])
-            png = raw_file(args.trajectory, camera, r["image_file"], args.raw)
             rr.log(f"{camera}/image", rr.EncodedImage(
                 contents=jpeg(png, args.jpeg_quality), media_type="image/jpeg"))
             rr.log(f"{camera}/mask", rr.SegmentationImage(mask_classes(r["mask_png"])))
         print(f"{camera}: logged every {args.stride}th of {len(rows)} masks ({footprint} footprint)")
+
+    lidar = pq.read_table(args.labels / "robosense" / deployment / f"{name}.parquet").to_pylist()
+    poses = np.array([r["pose"] for r in lidar], np.float64).reshape(-1, 4, 4)
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+    rr.log("world/trajectory", rr.LineStrips3D([poses[:, :3, 3]], colors=[(120, 120, 255)]), static=True)
+    picked = list(range(0, len(lidar), args.stride))
+    scans = pool.map(lambda k: raw_file(args.trajectory, "robosense", lidar[k]["robosense_file"], args.raw),
+                     picked) if args.lidar else iter(lambda: None, 0)
+    for k, scan in zip(picked, scans):
+        r = lidar[k]
+        at(r["timestamp_us"])
+        rr.log("world/robot", rr.Transform3D(translation=poses[k, :3, 3], mat3x3=poses[k, :3, :3]))
+        rr.log("world/robot/axes", rr.Arrows3D(
+            vectors=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)]))
+        if args.lidar:
+            rec = np.frombuffer(scan, dtype=RECORD)
+            if len(rec) != r["n_points"]:
+                raise SystemExit(f"{r['robosense_file']}: {len(rec)} points, labels say {r['n_points']}")
+            xyz = np.column_stack([rec["x"], rec["y"], rec["z"]])
+            colors = np.full((len(rec), 3), 150, np.uint8)
+            colors[np.asarray(r["driven_indices_past"], np.int64)] = (255, 160, 0)
+            colors[np.asarray(r["driven_indices"], np.int64)] = (0, 200, 0)
+            rr.log("world/robot/lidar", rr.Points3D(xyz, colors=colors, radii=0.03))
+    print(f"robosense: logged every {args.stride}th of {len(lidar)} scans")
 
 
 if __name__ == "__main__":

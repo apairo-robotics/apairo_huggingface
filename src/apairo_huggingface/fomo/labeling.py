@@ -208,12 +208,19 @@ def _smooth(values: np.ndarray, sigma: float) -> np.ndarray:
     return np.convolve(padded, kernel / kernel.sum(), mode="valid")
 
 
-def corridor_world(traj: np.ndarray, start: np.ndarray, step: float = 0.3):
-    """Left/right edges of the future footprint from ``start``, world frame."""
+def corridor_world(poses: np.ndarray, start: np.ndarray, step: float = 0.3):
+    """Left/right edges of the footprint along ``poses`` (N, 4, 4) from ``start`` (4, 4), world frame.
+
+    Each pose places its own wheel contacts, ``(0, +-ROBOT_HALF_WIDTH,
+    GROUND_OFFSET)`` in the lidar frame: the height, roll and pitch of the
+    footprint are the robot's when it was there, not a flat ribbon.
+    """
     empty = np.empty((0, 3))
-    pos = np.vstack([start[None], traj])
+    poses = np.concatenate([start[None], poses])
+    pos = poses[:, :3, 3]
     seg = np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)
-    pos = pos[np.concatenate([[True], seg > 1e-3])]
+    keep = np.concatenate([[True], seg > 1e-3])
+    poses, pos = poses[keep], pos[keep]
     if len(pos) < 2:
         return empty, empty
     seg = np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)
@@ -221,22 +228,20 @@ def corridor_world(traj: np.ndarray, start: np.ndarray, step: float = 0.3):
     end = int(np.searchsorted(path, config.FORWARD_DISTANCE, side="right"))
     if end < 2:
         return empty, empty
-    pos, path = pos[:end], path[:end]
+    poses, path = poses[:end], path[:end]
     s = np.arange(0.0, path[-1], step)
     if len(s) < 2:
         return empty, empty
-    x, y = np.interp(s, path, pos[:, 0]), np.interp(s, path, pos[:, 1])
-    z = np.interp(s, path, pos[:, 2]) + config.GROUND_OFFSET
-    # Odometry jitters by centimetres between 10 Hz poses; at grazing angles
-    # that alone makes the corridor edges zigzag in the image.
-    x, y, z = (_smooth(c, config.PATH_SMOOTHING / step) for c in (x, y, z))
-    dx, dy = np.gradient(x), np.gradient(y)
-    norm = np.hypot(dx, dy)
-    norm[norm == 0] = 1.0
-    lx, ly = -dy / norm, dx / norm
     hw = config.ROBOT_HALF_WIDTH
-    return (np.column_stack([x + hw * lx, y + hw * ly, z]),
-            np.column_stack([x - hw * lx, y - hw * ly, z]))
+    edges = []
+    for side in (hw, -hw):
+        contact = np.array([0.0, side, config.GROUND_OFFSET])
+        pts = poses[:, :3, :3] @ contact + poses[:, :3, 3]
+        # Odometry jitters by centimetres between 10 Hz poses; at grazing
+        # angles that alone makes the corridor edges zigzag in the image.
+        edges.append(np.column_stack([
+            _smooth(np.interp(s, path, pts[:, i]), config.PATH_SMOOTHING / step) for i in range(3)]))
+    return edges[0], edges[1]
 
 
 def corridor_mask(left_w, right_w, cam_from_world, points_world, *, margin=0.5, above=0.3,
@@ -373,8 +378,8 @@ def label_images(traj_dir, *, camera: str = config.CAMERA, stamps_us=None,
         # ring splats never stick out of it.
         mask[mask == 1] = 0
         now = int(np.searchsorted(poses_ts, t_cam, side="right"))
-        path = traj[now:] if footprint == "future" else traj[:now][::-1]
-        left, right = corridor_world(path, T_cam[:3, 3])
+        path = poses[now:] if footprint == "future" else poses[:now][::-1]
+        left, right = corridor_world(path, T_cam)
         pts_world = pts @ T_cam[:3, :3].T + T_cam[:3, 3]
         mask[corridor_mask(left, right, E @ np.linalg.inv(T_cam), pts_world, intrinsics=intrinsics)] = 1
         Image.fromarray(mask, mode="L").save(tmp / f"{us}.png")
