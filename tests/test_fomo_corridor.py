@@ -1,10 +1,12 @@
-"""The FoMo image corridor: ground returns never hide it, obstacles do."""
+"""The FoMo image footprint: the scan labels' robot model, drawn in the image."""
 
 import numpy as np
+from apairo.core.sample import Sample
+from apairo_preprocess import TraversabilityFromTrajectory
 
 from apairo_huggingface.fomo import config
 from apairo_huggingface.fomo.calibration import INTRINSICS
-from apairo_huggingface.fomo.labeling import _project_unclipped, corridor_mask, corridor_world
+from apairo_huggingface.fomo.labeling import _project_unclipped, corridor_mask, footprint_boxes
 
 GROUND_Z = config.GROUND_OFFSET  # the poses are the lidar, LIDAR_HEIGHT above the ground
 # A forward camera at the lidar origin, looking along the driving direction (-x).
@@ -13,24 +15,20 @@ CAM_FROM_WORLD[:3, :3] = [[0, 1, 0], [0, 0, -1], [-1, 0, 0]]
 ZED = INTRINSICS["zedx_left"]
 
 
-def _straight_corridor():
-    path = np.column_stack([-np.arange(0.5, 40.0, 0.5), np.zeros(79), np.zeros(79)])
-    return corridor_world(_poses(path), np.eye(4))
-
-
-def _poses(positions, yaw=None, roll=None):
+def _poses(positions, yaw=None):
     out = np.tile(np.eye(4), (len(positions), 1, 1))
     out[:, :3, 3] = positions
-    for k in range(len(positions)):
-        a, b = (0.0 if yaw is None else yaw[k]), (0.0 if roll is None else roll[k])
-        rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
-        rx = np.array([[1, 0, 0], [0, np.cos(b), -np.sin(b)], [0, np.sin(b), np.cos(b)]])
-        out[k, :3, :3] = rz @ rx
+    a = np.zeros(len(positions)) if yaw is None else np.asarray(yaw)
+    out[:, 0, 0], out[:, 0, 1], out[:, 1, 0], out[:, 1, 1] = np.cos(a), -np.sin(a), np.sin(a), np.cos(a)
     return out
 
 
-def _ground(x_max=45.0):
-    x, y = np.meshgrid(-np.arange(1.0, x_max, 0.1), np.arange(-6.0, 6.0, 0.1))
+def _straight(n=300, step=0.15):
+    return _poses(np.column_stack([-np.arange(1, n + 1) * step, np.zeros(n), np.zeros(n)]))
+
+
+def _ground(x_max=45.0, y_max=6.0, step=0.1):
+    x, y = np.meshgrid(-np.arange(1.0, x_max, step), np.arange(-y_max, y_max, step))
     return np.column_stack([x.ravel(), y.ravel(), np.full(x.size, GROUND_Z)])
 
 
@@ -39,46 +37,60 @@ def _row(x):
     return int(v[0])
 
 
-def test_dense_ground_does_not_cut_the_corridor():
-    left, right = _straight_corridor()
-    mask = corridor_mask(left, right, CAM_FROM_WORLD, _ground(), intrinsics=ZED)
+def _pixels(points):
+    u, v, z = _project_unclipped(points @ CAM_FROM_WORLD[:3, :3].T, ZED)
+    ok = (z > 0.5) & (u >= 0) & (u < 1920) & (v >= 0) & (v < 1200)
+    return u.astype(int), v.astype(int), ok
+
+
+def test_dense_ground_does_not_cut_the_footprint():
+    mask = corridor_mask(footprint_boxes(_straight()), CAM_FROM_WORLD, _ground(), intrinsics=ZED)
     rows = np.flatnonzero(mask.any(axis=1))
-    # the corridor reaches its full 30 m of path, not the first ground return
+    # the footprint reaches its full 30 m of path, not the first ground return
     assert rows.min() <= _row(-config.FORWARD_DISTANCE + 1.0)
 
 
-def test_obstacle_hides_the_corridor_behind_it():
-    left, right = _straight_corridor()
+def test_obstacle_hides_the_footprint_behind_it():
+    boxes = footprint_boxes(_straight())
     yy, zz = np.meshgrid(np.arange(-0.6, 0.6, 0.05), np.arange(GROUND_Z + 0.4, 1.0, 0.05))
     wall = np.column_stack([np.full(yy.size, -12.0), yy.ravel(), zz.ravel()])
-    clear = corridor_mask(left, right, CAM_FROM_WORLD, _ground(), intrinsics=ZED)
-    blocked = corridor_mask(left, right, CAM_FROM_WORLD, np.vstack([_ground(), wall]), intrinsics=ZED)
-    far = _row(-20.0)
-    near = _row(-6.0)
-    assert clear[far].any() and not blocked[far].any()
-    assert blocked[near].any()
+    clear = corridor_mask(boxes, CAM_FROM_WORLD, _ground(), intrinsics=ZED)
+    blocked = corridor_mask(boxes, CAM_FROM_WORLD, np.vstack([_ground(), wall]), intrinsics=ZED)
+    assert clear[_row(-20.0)].any() and not blocked[_row(-20.0)].any()
+    assert blocked[_row(-6.0)].any()
 
 
-def test_pose_jitter_does_not_zigzag_the_edges():
-    # 10 Hz poses on a straight road, with odometry noise of a few centimetres
+def test_image_footprint_is_the_scan_labels_footprint():
+    # a curving path with yaw noise; the scan labeler and the image use one robot model
     rng = np.random.default_rng(0)
-    n = 200
-    path = np.column_stack([-np.arange(1, n + 1) * 0.15,
-                            rng.normal(0, 0.03, n), rng.normal(0, 0.05, n)])
-    poses = _poses(path, yaw=rng.normal(0, np.radians(3), n), roll=rng.normal(0, np.radians(2), n))
-    left, right = corridor_world(poses, np.eye(4))
-    width = np.linalg.norm(left[:, :2] - right[:, :2], axis=1)
-    assert np.allclose(width, 2 * config.ROBOT_HALF_WIDTH, atol=0.02)
-    # the edges stay within a few centimetres of the true road, laterally and in height
-    assert np.abs(np.abs(left[:, 1]) - config.ROBOT_HALF_WIDTH).max() < 0.06
-    assert np.abs(left[:, 2] - GROUND_Z).max() < 0.06
+    n = 250
+    s = np.arange(1, n + 1) * 0.15
+    heading = np.pi + 0.02 * s
+    pos = np.column_stack([np.cumsum(np.cos(heading) * 0.15), np.cumsum(np.sin(heading) * 0.15), np.zeros(n)])
+    poses = _poses(pos, yaw=heading + rng.normal(0, np.radians(1), n))
+    ground = _ground(x_max=35.0, y_max=10.0, step=0.05)
+    labeler = TraversabilityFromTrajectory(
+        robot_length=config.ROBOT_LENGTH, robot_width=config.ROBOT_WIDTH,
+        height_min=config.HEIGHT_MIN, height_max=config.HEIGHT_MAX,
+        forward_distance=config.FORWARD_DISTANCE)
+    frames = [Sample(data={"lidar": ground, "poses": np.eye(4)})]
+    frames += [Sample(data={"lidar": np.zeros((0, 3)), "poses": p}) for p in poses]
+    driven = np.asarray(labeler(iter(frames))[0], bool)
+    mask = corridor_mask(footprint_boxes(poses), CAM_FROM_WORLD, ground, intrinsics=ZED)
+    u, v, ok = _pixels(ground)
+    in_mask = np.zeros(len(ground), bool)
+    in_mask[ok] = mask[v[ok], u[ok]]
+    near = ok & (-ground[:, 0] < 15.0)
+    assert driven[near].sum() > 1000
+    assert in_mask[ok & driven].mean() > 0.99
+    # Beyond ~15 m one pixel row spans about a metre of ground at grazing
+    # angles, so pixels on the box edges also hold points just outside them.
+    assert driven[near & in_mask].mean() > 0.98
 
 
-def test_footprint_follows_the_robot_roll():
-    # on a side slope the robot rolls: one wheel line sits higher than the other
-    n = 100
-    path = np.column_stack([-np.arange(1, n + 1) * 0.3, np.zeros(n), np.zeros(n)])
-    roll = np.full(n, np.radians(10))
-    left, right = corridor_world(_poses(path, roll=roll), _poses(path[:1], roll=roll[:1])[0])
-    dz = left[:, 2] - right[:, 2]
-    assert np.allclose(dz, 2 * config.ROBOT_HALF_WIDTH * np.sin(np.radians(10)), atol=0.01)
+def test_height_jitter_does_not_zigzag_the_footprint():
+    rng = np.random.default_rng(0)
+    poses = _straight()
+    poses[:, 2, 3] += rng.normal(0, 0.05, len(poses))
+    boxes = footprint_boxes(poses)
+    assert np.abs(boxes[:, 0, 2] - GROUND_Z).max() < 0.05

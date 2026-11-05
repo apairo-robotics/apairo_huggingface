@@ -124,7 +124,8 @@ def label_scans(traj_dir, *, footprint: str = "future", overwrite: bool = False,
     traj = poses[order, :3, 3]
     path = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(traj, axis=0), axis=1))])
     labeler = TraversabilityFromTrajectory(
-        robot_radius=config.ROBOT_HALF_WIDTH,
+        robot_length=config.ROBOT_LENGTH,
+        robot_width=config.ROBOT_WIDTH,
         height_min=config.HEIGHT_MIN,
         height_max=config.HEIGHT_MAX,
         forward_distance=config.FORWARD_DISTANCE,
@@ -208,87 +209,76 @@ def _smooth(values: np.ndarray, sigma: float) -> np.ndarray:
     return np.convolve(padded, kernel / kernel.sum(), mode="valid")
 
 
-def corridor_world(poses: np.ndarray, start: np.ndarray, step: float = 0.3):
-    """Left/right edges of the footprint along ``poses`` (N, 4, 4) from ``start`` (4, 4), world frame.
+def footprint_boxes(poses: np.ndarray, min_step: float = 0.1) -> np.ndarray:
+    """(Q, 4, 3) ground quads of the robot footprint at ``poses`` (N, 4, 4), world frame.
 
-    Each pose places its own wheel contacts, ``(0, +-ROBOT_HALF_WIDTH,
-    GROUND_OFFSET)`` in the lidar frame: the height, roll and pitch of the
-    footprint are the robot's when it was there, not a flat ribbon.
+    The same model as the scan labels (``TraversabilityFromTrajectory`` with
+    ``robot_length`` / ``robot_width``): a ``ROBOT_LENGTH x ROBOT_WIDTH`` box
+    turned by each pose's yaw, over the first ``FORWARD_DISTANCE`` metres of
+    path. The scan labels accept a height window around each pose; an image
+    needs one surface, drawn at the pose height minus ``LIDAR_HEIGHT``,
+    smoothed along the path because the odometry height jitters by
+    centimetres between 10 Hz poses.
     """
-    empty = np.empty((0, 3))
-    poses = np.concatenate([start[None], poses])
+    if len(poses) == 0:
+        return np.empty((0, 4, 3))
     pos = poses[:, :3, 3]
-    seg = np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)
-    keep = np.concatenate([[True], seg > 1e-3])
-    poses, pos = poses[keep], pos[keep]
-    if len(pos) < 2:
-        return empty, empty
-    seg = np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)
-    path = np.concatenate([[0.0], np.cumsum(seg)])
+    path = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(pos, axis=0), axis=1))])
     end = int(np.searchsorted(path, config.FORWARD_DISTANCE, side="right"))
-    if end < 2:
-        return empty, empty
     poses, path = poses[:end], path[:end]
-    s = np.arange(0.0, path[-1], step)
-    if len(s) < 2:
-        return empty, empty
-    hw = config.ROBOT_HALF_WIDTH
-    edges = []
-    for side in (hw, -hw):
-        contact = np.array([0.0, side, config.GROUND_OFFSET])
-        pts = poses[:, :3, :3] @ contact + poses[:, :3, 3]
-        # Odometry jitters by centimetres between 10 Hz poses; at grazing
-        # angles that alone makes the corridor edges zigzag in the image.
-        edges.append(np.column_stack([
-            _smooth(np.interp(s, path, pts[:, i]), config.PATH_SMOOTHING / step) for i in range(3)]))
-    return edges[0], edges[1]
+    keep, last = [], -np.inf
+    for k, s in enumerate(path):
+        if s - last >= min_step:
+            keep.append(k)
+            last = s
+    poses, path = poses[keep], path[keep]
+    z = poses[:, 2, 3] + config.GROUND_OFFSET
+    if len(z) > 1:
+        spacing = max(float(np.median(np.diff(path))), 1e-3)
+        z = _smooth(z, config.POSE_Z_SMOOTHING / spacing)
+    yaw = np.arctan2(poses[:, 1, 0], poses[:, 0, 0])
+    hl, hw = config.ROBOT_LENGTH / 2, config.ROBOT_WIDTH / 2
+    corners = np.array([[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]])
+    c, s = np.cos(yaw)[:, None], np.sin(yaw)[:, None]
+    x = poses[:, 0, 3][:, None] + c * corners[:, 0] - s * corners[:, 1]
+    y = poses[:, 1, 3][:, None] + s * corners[:, 0] + c * corners[:, 1]
+    return np.stack([x, y, np.repeat(z[:, None], 4, axis=1)], axis=-1)
 
 
-def corridor_mask(left_w, right_w, cam_from_world, points_world, *, margin=0.5, above=0.3,
+def corridor_mask(boxes_w, cam_from_world, points_world, *, margin=0.5, above=0.3,
                   intrinsics=INTRINSICS[config.CAMERA]):
-    """(H, W) bool: the corridor as filled quads, minus the quads an obstacle hides.
+    """(H, W) bool: the footprint boxes as filled quads, minus the boxes an obstacle hides.
 
-    A quad is hidden only by a lidar return that projects inside it, lies more
+    A box is hidden only by a lidar return that projects inside it, lies more
     than ``margin`` metres in front of it and more than ``above`` metres above
-    the corridor surface there. Ground returns never hide the ground: at
-    grazing angles a nearer ground return shares the pixels of a farther quad.
-    Far quads are drawn first, so where two quads overlap in the image the
+    the footprint surface there. Ground returns never hide the ground: at
+    grazing angles a nearer ground return shares the pixels of a farther box.
+    Far boxes are drawn first, so where two boxes overlap in the image the
     nearer one owns the pixels.
     """
     empty = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH), dtype=bool)
-    if len(left_w) < 2:
+    if len(boxes_w) == 0:
         return empty
-
-    def to_cam(p):
-        return p @ cam_from_world[:3, :3].T + cam_from_world[:3, 3]
-
-    ul, vl, zl = _project_unclipped(to_cam(left_w), intrinsics)
-    ur, vr, zr = _project_unclipped(to_cam(right_w), intrinsics)
-
-    def quad(i):
-        return [(ul[i], vl[i]), (ur[i], vr[i]), (ur[i + 1], vr[i + 1]), (ul[i + 1], vl[i + 1])]
-
-    quads = [
-        i for i in range(len(ul) - 1)
-        if min(zl[i], zr[i], zl[i + 1], zr[i + 1]) >= 0.5
-        and all(np.isfinite(c) for q in quad(i) for c in q)
-    ]
-    if not quads:
+    cam = boxes_w.reshape(-1, 3) @ cam_from_world[:3, :3].T + cam_from_world[:3, 3]
+    u, v, zc = (a.reshape(-1, 4) for a in _project_unclipped(cam, intrinsics))
+    ok = np.flatnonzero((zc.min(axis=1) >= 0.5) & np.isfinite(u).all(axis=1) & np.isfinite(v).all(axis=1))
+    if len(ok) == 0:
         return empty
+    depth = zc.mean(axis=1)
     ids_img = Image.new("I", (IMAGE_WIDTH, IMAGE_HEIGHT), 0)
     draw = ImageDraw.Draw(ids_img)
-    for i in sorted(quads, key=lambda i: -(zl[i] + zr[i])):
-        draw.polygon(quad(i), fill=i + 1)
+    for i in ok[np.argsort(-depth[ok])]:
+        draw.polygon(list(zip(u[i], v[i])), fill=int(i) + 1)
     ids = np.asarray(ids_img, dtype=np.int64) - 1
 
-    u, v, z = _project_unclipped(to_cam(points_world), intrinsics)
-    inside = (z > 0.5) & (u >= 0) & (u < IMAGE_WIDTH) & (v >= 0) & (v < IMAGE_HEIGHT)
-    q = ids[v[inside].astype(int), u[inside].astype(int)]
+    pc = points_world @ cam_from_world[:3, :3].T + cam_from_world[:3, 3]
+    pu, pv, pz = _project_unclipped(pc, intrinsics)
+    inside = (pz > 0.5) & (pu >= 0) & (pu < IMAGE_WIDTH) & (pv >= 0) & (pv < IMAGE_HEIGHT)
+    q = ids[pv[inside].astype(int), pu[inside].astype(int)]
     hit = q >= 0
-    q, z_pt, h_pt = q[hit], z[inside][hit], points_world[inside][hit, 2]
-    depth = 0.25 * (zl[q] + zr[q] + zl[q + 1] + zr[q + 1])
-    ground = 0.25 * (left_w[q, 2] + right_w[q, 2] + left_w[q + 1, 2] + right_w[q + 1, 2])
-    hidden = np.unique(q[(z_pt < depth - margin) & (h_pt > ground + above)])
+    q, z_pt, h_pt = q[hit], pz[inside][hit], points_world[inside][hit, 2]
+    ground = boxes_w[q, 0, 2]
+    hidden = np.unique(q[(z_pt < depth[q] - margin) & (h_pt > ground + above)])
     return (ids >= 0) & ~np.isin(ids, hidden)
 
 
@@ -355,7 +345,6 @@ def label_images(traj_dir, *, camera: str = config.CAMERA, stamps_us=None,
         radius=config.SPLAT_RADIUS,
         occlusion_bin_px=config.OCCLUSION_BIN_PX,
     )
-    traj = poses[:, :3, 3]
     tmp = traj_dir / f"{channel}.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir()
@@ -378,10 +367,12 @@ def label_images(traj_dir, *, camera: str = config.CAMERA, stamps_us=None,
         # ring splats never stick out of it.
         mask[mask == 1] = 0
         now = int(np.searchsorted(poses_ts, t_cam, side="right"))
+        # The footprint of the poses after (future) or before (past) the frame,
+        # as the scan labels take the poses after or before their scan.
         path = poses[now:] if footprint == "future" else poses[:now][::-1]
-        left, right = corridor_world(path, T_cam)
         pts_world = pts @ T_cam[:3, :3].T + T_cam[:3, 3]
-        mask[corridor_mask(left, right, E @ np.linalg.inv(T_cam), pts_world, intrinsics=intrinsics)] = 1
+        mask[corridor_mask(footprint_boxes(path), E @ np.linalg.inv(T_cam), pts_world,
+                           intrinsics=intrinsics)] = 1
         Image.fromarray(mask, mode="L").save(tmp / f"{us}.png")
         stamps.append(us)
         if k % 500 == 0:

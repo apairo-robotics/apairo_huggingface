@@ -29,10 +29,14 @@ ODOM_MAX_RANGE = 80.0
 ODOM_MIN_RANGE = 2.0          # drops the robot's own returns
 ODOM_VOXEL = 0.5
 
-# The platform is a Clearpath Warthog, 1.38 m wide; 0.7 m half-width.
-ROBOT_HALF_WIDTH = 0.7
+# The robot model, one footprint for the scan labels and the image masks: the
+# Clearpath Warthog wheel-contact box, centred on base_link (the RoboSense
+# origin). warthog_description: wheelbase 2 x 0.457 m + 0.6 m tyres = 1.51 m,
+# track 2 x 0.568 m + 0.25 m tyres = 1.39 m; Clearpath manual: 1.52 x 1.38 m.
+ROBOT_LENGTH = 1.52
+ROBOT_WIDTH = 1.38
 FORWARD_DISTANCE = 30.0       # look-ahead cap, metres of path
-PATH_SMOOTHING = 1.0          # gaussian sigma along the path before building the corridor, m
+POSE_Z_SMOOTHING = 1.0        # gaussian sigma (m of path) on the footprint height drawn in images
 # Height window of TraversabilityFromTrajectory, relative to the nearest future
 # pose (the lidar, LIDAR_HEIGHT above the ground): -0.3 m / +0.5 m around it.
 HEIGHT_MIN = -LIDAR_HEIGHT - 0.3
