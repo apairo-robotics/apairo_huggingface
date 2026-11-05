@@ -142,8 +142,8 @@ def run_one(traj: str, sizes: dict, args) -> dict:
         log.info("%s: done", traj)
         return state
     traj_dir = args.root / traj
-    if not (traj_dir / config.TRAV_TRAJ / "timestamps.txt").exists():
-        raise RuntimeError(f"{traj}: no {config.TRAV_TRAJ} on disk")
+    if not (traj_dir / config.POSES / "timestamps.txt").exists():
+        raise RuntimeError(f"{traj}: no {config.POSES} on disk")
     t0 = time.time()
 
     if state["step"] != "labelled":
@@ -155,10 +155,11 @@ def run_one(traj: str, sizes: dict, args) -> dict:
                              f"{need / 1e9:.1f} GB needed + {MARGIN / 1e9:.0f} GB margin)")
         fetch_trajectory(traj, args.root, subdirs=(config.LIDAR,))
         state["fetch_s"] = round(time.time() - t0)
-        state["scans_checked"] = check_scans(traj_dir)
-        save_state(state_dir, state)
 
         t1 = time.time()
+        label_scans(traj_dir, footprint="future")
+        state["scans_checked"] = check_scans(traj_dir)
+        save_state(state_dir, state)
         label_scans(traj_dir, footprint="past")
         state["masks"] = {}
         for camera in config.CAMERAS:
