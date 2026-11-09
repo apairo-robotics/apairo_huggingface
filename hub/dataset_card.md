@@ -81,7 +81,7 @@ Full source: [`mappings.py`](https://github.com/apairo-robotics/apairo_huggingfa
 [apairo_huggingface](https://github.com/apairo-robotics/apairo_huggingface)
 (the exporter above) ·
 [apairo](https://github.com/apairo-robotics/apairo) (the data layer) ·
-[apairo_extractor](https://github.com/apairo-robotics/apairo_extractor)
+[apairo_ros](https://github.com/apairo-robotics/apairo_ros)
 (rosbags → `.apairo` layout). Reproduce with:
 
 ```bash

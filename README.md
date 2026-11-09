@@ -22,7 +22,7 @@ primitives, and the export is ~17 lines of channel→feature naming.
 ## The pipeline
 
 ```
-rosbags ──apairo_extractor──▶ .apairo layout (channels, timestamps, calibration)
+rosbags ──apairo_ros──▶ .apairo layout (channels, timestamps, calibration)
         ──apairo-tartan-label──▶ trav_traj · lidar_uv · trav_mask   [derived channels]
         ──apairo-tartan-export──▶ LeRobotDataset: image · mask · pose · action
 ```
@@ -203,12 +203,12 @@ bags into its native layout directly, keeping `/tf`, static calibration and each
 channel's `frame_id` that the KITTI export flattens away.
 
 **2. Extract to apairo format** with
-[apairo_extractor](https://github.com/apairo-robotics/apairo_extractor), which
+[apairo_ros](https://github.com/apairo-robotics/apairo_ros), which
 reads ROS bags and writes the `.apairo` sidecars (`channels.yaml`, calibration
 from `/tf_static`) — ready for `TartanKittiDataset` / `RawDataset`:
 
 ```bash
-pip install -e ../apairo_extractor
+pip install apairo-ros
 
 apairo extractor      # launches the interactive TUI in the terminal
 ```
