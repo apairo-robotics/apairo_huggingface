@@ -164,6 +164,41 @@ deleted). The older `apairo-fomo export` (LeRobot images + masks) remains
 for reference; its Basler-based product is withdrawn
 (`hub/fomo_dataset_card.md`).
 
+## RELLIS-3D: lidar labels and traversability in every image (in progress)
+
+[RELLIS-3D](https://github.com/unmannedlab/RELLIS-3D) (CC BY-NC-SA 3.0)
+annotates 13556 Ouster scans point by point, but only 6235 camera images.
+Every scan is co-captured with an image, so `apairo_huggingface.rellis`
+projects the scan labels into **all** 13556 images, adds a traversability mask
+from the driven trajectory, and measures how well the projected labels agree
+with the official 2D annotations:
+
+- `semkitti_label`, an apairo **format plugin** for SemanticKITTI `.label` files;
+- a declaration (`rellis/apairo.yaml`) reading a sequence as published; scans
+  and labels borrow the camera clock (the filenames carry the stamp). The source
+  tree is read through a symlink view, so nothing is written into it;
+- `sem_mask` (ontology id, 255 = no lidar point) and `trav_mask`
+  (1 driven / 0 seen, not driven / 255 no data) for every image;
+- `apairo-rellis agreement`: per-class IoU against the official 2D labels,
+  only where the projection has data;
+- the export: image (video), both masks and the official 2D label (lossless
+  PNG), pose, executed motion as `action`, official lidar split per frame.
+
+`rellis/calibration.py` documents the calibration chain and its traps (an
+extrinsic stored as the camera pose, to be inverted; rectified images, so no
+distortion), each checked by scoring projections against the 2D annotations.
+
+```bash
+apairo-rellis process   --root /data/rellis --out ~/data/rellis_derived    # all 5 sequences
+apairo-rellis coverage  --out ~/data/rellis_derived                        # coverage table, from the masks
+apairo-rellis agreement --root /data/rellis --out ~/data/rellis_derived
+apairo-rellis overlay ~/data/rellis_derived/00003 --every 500 --png-dir /tmp/overlays
+apairo-rellis export ~/data/rellis_derived 00003 --root /data/rellis --lerobot-root ~/data/rellis_lerobot
+```
+
+The derived dataset inherits RELLIS-3D's **non-commercial, share-alike**
+license.
+
 ## Install
 
 ```bash
