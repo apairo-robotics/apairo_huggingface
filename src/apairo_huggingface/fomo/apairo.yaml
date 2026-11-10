@@ -1,0 +1,21 @@
+# apairo declaration of one FoMo trajectory (<deployment>/<trajectory>/).
+# Passed at load time (RawDataset(traj, declare=...)): the FoMo tree itself is
+# never edited. Every sensor keeps its own clock, read from the filename stems,
+# which are microsecond epochs.
+channels:
+  robosense:                # RoboSense Ruby Plus, 128 rings, ~10 Hz
+    loader: fomo_bin
+    fields: [x, y, z, t]    # t: s from the scan start, for KISS-ICP deskewing
+    key: {name: '^(\d+)$', units: [us]}
+  zedx_left:                # ZED X left, 1920x1200 RGBA, raw; looks forward
+    loader: img
+    key: {name: '^(\d+)$', units: [us]}
+  basler:                   # Basler, 1920x1200 RGB, ~10 Hz; looks backward
+    loader: img
+    key: {name: '^(\d+)$', units: [us]}
+  cmd_velocity:             # twist command sent to the Warthog, ~50 Hz
+    loader: csv
+    directory: metadata
+    array_file: cmd_velocity.csv
+    fields: [lx, az]        # forward speed (m/s), yaw rate (rad/s)
+    key: {column: timestamp, units: [us]}

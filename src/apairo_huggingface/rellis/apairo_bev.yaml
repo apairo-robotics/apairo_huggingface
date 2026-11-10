@@ -1,0 +1,24 @@
+# apairo declaration of one RELLIS-3D sequence for the BEV grids (see bev.py),
+# read through a symlink view under ~/data/rellis_bev/<seq>/ so the shared
+# source tree is never written.
+#
+# Clock: the scans carry no stamp. bev.make_view writes poses/timestamps.txt
+# once from the camera filenames (frame<idx>-<s>_<ms>, the image co-captured
+# with scan <idx>), so the scans, their labels and their poses share that clock
+# without decoding a single image.
+version: 1
+channels:
+  pylon_camera_node:          # Basler acA1920, 1920x1200 RGB, 10 Hz
+    loader: img
+    key: {name: 'frame\d+-(\d+)_(\d+)', scale: [1, 0.001]}
+  poses:                      # poses.txt (symlinked): 3x4 T_world_lidar per scan, row-major
+    loader: csv
+    array_file: poses.txt
+  os1_cloud_node_kitti_bin:   # Ouster OS1-64, (N, 4) float32 x y z intensity
+    loader: bin
+    alias: lidar
+    timestamps_from: poses
+  os1_cloud_node_semantickitti_label_id:  # (N,) ontology ids, one per point
+    loader: semkitti_label
+    alias: labels
+    timestamps_from: poses

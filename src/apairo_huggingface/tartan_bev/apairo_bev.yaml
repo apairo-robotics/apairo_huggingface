@@ -1,0 +1,28 @@
+# apairo declaration of one TartanDrive 2.0 recording for the BEV grids (see
+# bev.py), read through a symlink view under ~/data/tartan_bev/<seq>/ so the
+# shared source tree is never written.
+#
+# Every channel carries its own timestamps.txt (the rosbag stamps). The GICP
+# poses are one per scan, stamped with the scan stamps: declared on the lidar
+# clock, so apairo zips scan + pose into one sample for the preprocessor.
+version: 1
+channels:
+  image_left_color:   # multisense left, 1024x544 rectified RGB, ~10 Hz
+    loader: img
+  velodyne_0:         # (N, 3) float32 x y z, vehicle frame; *_intensity.npy files are skipped
+    loader: npys
+  gicp_poses:         # poses.npy (N, 4, 4) T_world_vehicle (world = the first scan's vehicle frame)
+    loader: npy
+    array_file: poses.npy
+    timestamps_from: velodyne_0
+  gicp_valid:         # valid_mask.npy (N,) bool, one per pose, beside poses.npy
+    loader: npy
+    directory: gicp_poses
+    array_file: valid_mask.npy
+    timestamps_from: velodyne_0
+  gps_odom:           # odometry.npy (M, 13) Novatel INS: position, orientation (qx qy qz qw), twist; 50 Hz
+    loader: npy
+    array_file: odometry.npy
+  cmd:                # twist.npy (N, 2) [linear_velocity, angular_velocity] command
+    loader: npy
+    array_file: twist.npy
