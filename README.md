@@ -199,12 +199,60 @@ apairo-rellis export ~/data/rellis_derived 00003 --root /data/rellis --lerobot-r
 The derived dataset inherits RELLIS-3D's **non-commercial, share-alike**
 license.
 
+## AMIAD Isaac Sim: perfect semantics, measured PU noise (in progress)
+
+The lab's Isaac Sim recording (one ROS 2 mcap, Barakuda in a generated
+forest) has a perfect semantic camera. `apairo_huggingface.sim_amiad` turns it
+into an apairo sequence, transfers the sim semantics to the lidar, adds the
+usual trajectory traversability, and measures how noisy that self-supervised
+PU label is against the semantic truth -- the sim-to-real companion of the
+FoMo / RELLIS / TartanDrive derived datasets. Local only: the data is the
+lab's, nothing is pushed to the Hub.
+
+- `extract`: a streaming mcap reader (rosbags) writing lidar, RGB, semantic
+  (runtime Isaac ids remapped through each frame's `/cam2/semantic_labels` and
+  `name_to_id` of `semantic_classes.json`), depth, the sim's own semantic
+  cloud, poses, odometry, IMU and `/cmd_vel`, all on the header (sim) clock;
+  fixed `/tf` edges and the camera_info go to `calibration.yaml`;
+- `label`: `point_sem` (class of each lidar point, only if its depth agrees
+  with the sim depth image), `trav_traj` (future footprint) and `trav_mask`;
+- `agreement`: positive precision / recall, the share of the unlabeled set
+  that is truly traversable, per range band, plus a point-by-point check of
+  the label transfer against the sim's semantic cloud;
+- the export: image (video), semantic and traversability masks (PNG), pose,
+  `/cmd_vel` as `action`, every 4th scan; the fps is measured from the scan
+  stamps (15 on this bag, whose scans are exactly 1/60 s apart) and an
+  irregular sequence is refused. Images are matched to a scan within the same
+  5 ms tolerance (`config.SYNC_TOLERANCE`) as the labelling.
+
+Label transfer vs the sim's own semantic cloud (2247 clouds of the full bag,
+every cloud point matched to a lidar point within 1 cm): **97.78 %** agreement
+on the 5,353,101 points both sides give a real class. Counting `unlabeled`
+(0) as a class gives 97.20 % on 5,385,122 points: the 32,021 extra points are
+all points we label (30,488 tree, 1,533 vegetation) that the sim cloud calls
+unlabeled; we never label a matched point 0. The 30 s segment
+`seg_t035_t065`: 97.71 % (97.20 % with 0). `agreement.json` holds both.
+
+`extract` needs the optional `[sim]` extra (`pip install -e ".[sim]"`, for
+`rosbags`); the other commands do not. `sim_amiad/config.py` documents the frame trap: the camera headers say `ZED2`,
+which is not an optical frame; the pinhole frame is its child `ZED2_pcl`.
+
+```bash
+apairo-sim-amiad extract --out ~/data/sim_amiad/full
+apairo-sim-amiad label ~/data/sim_amiad/full
+apairo-sim-amiad agreement ~/data/sim_amiad/full
+apairo-sim-amiad overlay ~/data/sim_amiad/full --every 1000 --png-dir /tmp/overlays
+apairo-sim-amiad export ~/data/sim_amiad/full --lerobot-root ~/data/sim_amiad/lerobot
+apairo-sim-amiad check ~/data/sim_amiad/lerobot
+```
+
 ## Install
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ../apairo -e ../apairo_preprocess   # sibling repos, editable
 pip install -e ".[test]"                           # this package + lerobot>=0.4.0
+pip install -e ".[sim]"                            # + rosbags, for apairo-sim-amiad extract
 ```
 
 With `uv`, `apairo_preprocess` pins `apairo-transform` to its git URL, which
