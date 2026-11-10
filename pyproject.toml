@@ -32,6 +32,7 @@ apairo-tartan-gt-export = "apairo_huggingface.cli:gt_export_main"
 apairo-fomo = "apairo_huggingface.fomo.cli:main"
 apairo-rellis = "apairo_huggingface.rellis.cli:main"
 apairo-sim-amiad = "apairo_huggingface.sim_amiad.cli:main"
+apairo-tartan-bev = "apairo_huggingface.tartan_bev.cli:main"
 
 [project.entry-points."apairo.formats"]
 fomo_bin = "apairo_huggingface.fomo.format:FomoBinFormat"
@@ -42,7 +43,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "apairo_huggingface.fomo" = ["apairo.yaml"]
-"apairo_huggingface.rellis" = ["apairo.yaml"]
+"apairo_huggingface.rellis" = ["apairo.yaml", "apairo_bev.yaml"]
+"apairo_huggingface.tartan_bev" = ["apairo_bev.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
