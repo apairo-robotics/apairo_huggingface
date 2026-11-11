@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from apairo_huggingface import config, load_tartan, to_lerobot, validate
+from pathlib import Path
+
+import numpy as np
+
+from apairo_huggingface import aligned_frames, config, episodes, load_tartan, to_lerobot, validate
 
 
 def test_validate_matches_schema(tartan_root, n_episodes, n_frames):
@@ -37,3 +41,41 @@ def test_to_lerobot_roundtrip(tartan_root, tmp_path, n_episodes, n_frames):
     assert frame["action"].shape == (len(config.ACTION_NAMES),)
     assert frame["task"] == config.TASK
     assert frame["observation.images.front"].ndim == 3   # (C, H, W)
+
+
+def _utm_odometry(seq, step=0.26, yaw=np.radians(30.0)):
+    """Overwrite a recording's gps_odom with UTM-scale rows (x ~ 4.48e6 m, where
+    float32 spacing is 0.5 m) driving ``step`` metres per frame along ``yaw``."""
+    path = Path(seq) / config.STATE / "odometry.npy"
+    rows = np.load(path)
+    k = np.arange(len(rows))
+    rows[:, 0] = 4_479_748.098 + step * k * np.cos(yaw)
+    rows[:, 1] = -603_117.905 + step * k * np.sin(yaw)
+    rows[:, 2] = 300.516
+    rows[:, 3:7] = [0.0, 0.0, np.sin(yaw / 2), np.cos(yaw / 2)]
+    np.save(path, rows)
+
+
+def test_state_is_relative_to_the_episode_start_and_not_quantised(tartan_root):
+    """UTM-scale positions cast straight to float32 fall on a 0.5 m grid; the
+    exported state is the pose relative to the episode's first frame, in its
+    vehicle frame, subtracted in float64 before the cast."""
+    for seq in sorted(Path(tartan_root).iterdir()):
+        if seq.is_dir():
+            _utm_odometry(seq)
+    for recording in episodes(load_tartan(tartan_root)):
+        states = np.stack([np.asarray(s.data[config.STATE]) for s in aligned_frames(recording)])
+        assert states.dtype == np.float32
+        np.testing.assert_allclose(states[0], [0, 0, 0, 0, 0, 0, 1], atol=1e-7)
+        # 0.26 m straight ahead per frame, the heading folded into the first frame.
+        expected = np.column_stack([0.26 * np.arange(len(states)), np.zeros((len(states), 5)),
+                                    np.ones(len(states))])
+        np.testing.assert_allclose(states, expected, atol=1e-4)
+
+
+def test_dataset_card_states_the_code_s_tolerance_and_state():
+    """The published card shows the export's own synchronization and state op."""
+    card = (Path(__file__).parents[1] / "hub" / "dataset_card.md").read_text(encoding="utf-8")
+    assert f"tolerance={config.TOLERANCE})" in card
+    assert f"±{config.TOLERANCE * 1000:.0f} ms" in card
+    assert "RelativeTo(origin)" in card

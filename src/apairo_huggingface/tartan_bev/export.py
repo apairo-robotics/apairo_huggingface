@@ -31,8 +31,10 @@ the pose are read at the scan itself:
   camera_index]``, the recording (its position in ``meta/apairo_recordings.json``),
   the scan and the matched image in it.
 
-TartanDrive repeats some scans under the same stamp (identical points); the
-export keeps the first of each repeat, so LeRobot frames are distinct instants.
+TartanDrive repeats some scans under the same stamp (identical points, pose
+re-registered within mm); the export keeps one scan of each repeat -- the last:
+``synchronize`` resolves a shared reference stamp to the later scan -- so
+LeRobot frames are distinct instants.
 Scans without a valid GICP pose or INS attitude (all-unknown grids) are not
 exported either.
 Grid layout: :mod:`apairo_huggingface.bev_grid` (row 0 = 30 m ahead, column
@@ -64,8 +66,9 @@ def _grid3(grid: np.ndarray) -> np.ndarray:
 
 def scan_clock(view):
     """The recording on the scan clock: ``(ds, synced, keep)``, ``keep`` the synced
-    frames exported: the first of every repeated scan, and only scans with a
-    valid pose and attitude (their grids are all-unknown)."""
+    frames exported: one per repeated stamp (``synchronize`` maps every tick of a
+    shared stamp to the last scan at it, so that scan is the one kept), and only
+    scans with a valid pose and attitude (the others' grids are all-unknown)."""
     ds = open_view(view, SYNC_KEYS + [config.POSES, config.POSE_VALID, config.ATTITUDE,
                                       config.BEV_ELEVATION, config.BEV_GEOMETRY])
     synced = ds.synchronize(reference=config.BEV_TRAV, method="nearest", tolerance=config.TOLERANCE)

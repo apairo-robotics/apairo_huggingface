@@ -320,4 +320,4 @@ def test_export_drops_invalid_scans(tmp_path, monkeypatch):
     root, _ = _synthetic_root(tmp_path, invalid=[5])
     bev.process_sequence(root, "rec", tmp_path / "out")
     scans = [int(f["observation.frame_info"][1]) for f in frames(tmp_path / "out" / "rec")]
-    assert scans == [0, 1, 3, 4, 6, 7, 8, 9]               # one of the repeat 2 / 3, and 5 is invalid
+    assert scans == [0, 1, 3, 4, 6, 7, 8, 9]               # the last of the repeat 2 / 3, and 5 is invalid

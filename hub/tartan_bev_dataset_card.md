@@ -196,7 +196,7 @@ parquet, 504 MB video) = 17.8 GB for the subset; the full release would be
   patterns in the step layer come from scans placed a few cm apart in z.
 - **Repeated scans.** The source repeats some scans under the same stamp
   (identical points; 4-149 per recording here, 413 in all); apairo keeps one grid per scan,
-  the LeRobot export keeps the first of each repeat.
+  the LeRobot export keeps one of each repeat (the last scan at the stamp).
 - **`cmd` linear is almost always 0**: in 10 of the 13 recordings it is 0
   throughout, in two it is nonzero in < 0.3% of the rows, only in sam_loop is
   it set (88%); the angular part is the steering command in [-1, 1]. `action`

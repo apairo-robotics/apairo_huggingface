@@ -62,8 +62,16 @@ naming:
 |---|---|---|
 | `observation.images.front` | `image_left_color` (H×W×3 uint8) | as-is (identity) |
 | `observation.traversability_mask` | `trav_mask` (H×W uint8) | replicate to RGB — lossless `image`, mp4 would corrupt labels |
-| `observation.state` | `gps_odom` | `ChannelSelect(range(7))` → pose, `CastTo(float32)` |
+| `observation.state` | `gps_odom` | `ChannelSelect(range(7))` → pose, `RelativeTo(first pose of the episode)` in float64, then `CastTo(float32)` |
 | `action` | `cmd` | `CastTo(float32)` → `[linear_velocity, angular_velocity]` |
+
+The state is the pose relative to the episode's first frame, in that
+frame's body frame (`[0, 0, 0, 0, 0, 0, 1]` at frame 0), as in the RELLIS,
+FoMo and BEV exports. `gps_odom` positions are UTM-scale (x ≈ 4.5e6 m): cast
+to float32 directly they fall on a 0.5 m grid (0.0625 m on y), coarser than
+the 0.26 m the vehicle drives per frame; subtracting the first pose in float64
+before the cast leaves only float32's resolution at the episode's own scale
+(≤ 0.03 mm on two real recordings, up to ~1 km from their start).
 
 The lidar *produces* the labels; it is not part of the published dataset.
 
@@ -101,7 +109,7 @@ src/apairo_huggingface/
   config.py      channels, sync + labeling params, task, feature dims
   calibration.py the TartanDrive rig: rectified intrinsics + velodyne→camera tf
   labeling.py    trajectory traversability -> trav_traj / lidar_uv / trav_mask
-  mappings.py    channel transforms (ChannelSelect / CastTo) + frame naming
+  mappings.py    channel transforms (ChannelSelect / RelativeTo / CastTo) + frame naming
   features.py    build_features — the LeRobot schema, sized from a real frame
   export.py      to_lerobot() — the reusable sink; validate() — the dry-run
   eval_labeling.py  ground_truth (toaster) -> trav_mask_gt, projected the same way as trav_mask
@@ -384,7 +392,8 @@ full release (~125.7k scans) would take ~55 GB of grids.
 
 The source repeats some scans under the same stamp (413 of the 27,561:
 identical points, pose re-registered within mm); `BevGrids` tells them apart
-by their pose, the export keeps the first. The `cmd` channel's linear part is
+by their pose, the export keeps one of each repeat (the last: `synchronize`
+resolves a shared stamp to the later scan). The `cmd` channel's linear part is
 0 in 10 of the 13 recordings (set only in sam_loop), and that `cmd` is the
 action of the published tartandrive_offroad, so the BEV export's `action` is the executed speed and yaw rate from the poses, as
 in the RELLIS BEV export, with `cmd` kept as `observation.command`.

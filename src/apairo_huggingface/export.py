@@ -2,8 +2,8 @@
 
 This module is where apairo's value shows: `to_lerobot` reads top to bottom as
 load -> align -> copy frames -> finalize, because apairo already did the loading,
-resampling and episode segmentation. The per-frame domain logic is three
-functions in :mod:`.mappings`.
+resampling and episode segmentation. The per-frame domain logic is in
+:mod:`.mappings`.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from apairo import TartanKittiDataset
 
 from . import config
 from .features import build_features
-from .mappings import CHANNEL_TRANSFORMS, frame_of
+from .mappings import channel_transforms, frame_of
 
 
 def load_tartan(root: str):
@@ -54,16 +54,20 @@ def episodes(tartan) -> list:
 
 
 def aligned_frames(episode):
-    """Resample one recording onto the camera clock, then cast/slice each channel.
+    """Resample one recording onto the camera clock, then slice/cast each channel.
 
     Transforms are applied *after* ``synchronize`` on purpose: a transform set on
     the pre-sync dataset is dropped, because the synchronized view resamples from
-    the raw channels.
+    the raw channels. The state is made relative to the pose of the episode's
+    first synchronized frame, read raw (float64) before any cast.
     """
     frames = episode.synchronize(
         reference=config.REFERENCE, method=config.METHOD, tolerance=config.TOLERANCE
     )
-    for channel, transform in CHANNEL_TRANSFORMS.items():
+    if not len(frames):
+        return frames
+    origin = np.asarray(frames[0].data[config.STATE], dtype=np.float64)[: config.POSE_DIM]
+    for channel, transform in channel_transforms(origin).items():
         frames = frames.transform(channel, transform, in_place=False)
     return frames
 

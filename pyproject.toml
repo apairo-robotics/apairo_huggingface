@@ -9,9 +9,9 @@ description = "Label apairo robotics datasets and export them to HuggingFace LeR
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "apairo>=0.9",
-    "apairo_preprocess",
-    "apairo_transform",
+    "apairo>=0.11",
+    "apairo_preprocess>=0.3",
+    "apairo_transform>=0.3.1",
     "lerobot>=0.4.0",
     "datasets>=4.0",
     "numpy",

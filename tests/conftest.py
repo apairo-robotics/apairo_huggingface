@@ -25,7 +25,9 @@ GROUND_Z = -1.77              # ground height below the velodyne
 
 
 def _timestamps(path, n):
-    path.write_text("".join(f"{BASE + i * STEP:.9e}\n" for i in range(n)))
+    # Fixed-point: "%.9e" kept 10 significant digits, 1 s at BASE, so every
+    # frame got the same stamp and every channel synced to its last row.
+    path.write_text("".join(f"{BASE + i * STEP:.6f}\n" for i in range(n)))
 
 
 def _scan():

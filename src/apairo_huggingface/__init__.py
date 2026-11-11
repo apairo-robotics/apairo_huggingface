@@ -15,7 +15,7 @@ from .eval_labeling import label_ground_truth_root, label_ground_truth_sequence
 from .export import aligned_frames, episodes, load_tartan, to_lerobot, validate
 from .features import build_features
 from .labeling import label_root, label_sequence
-from .mappings import CHANNEL_TRANSFORMS, frame_of
+from .mappings import RelativeTo, channel_transforms, frame_of
 
 __all__ = [
     "config",
@@ -26,7 +26,8 @@ __all__ = [
     "aligned_frames",
     "build_features",
     "frame_of",
-    "CHANNEL_TRANSFORMS",
+    "channel_transforms",
+    "RelativeTo",
     "label_sequence",
     "label_root",
     "label_ground_truth_sequence",

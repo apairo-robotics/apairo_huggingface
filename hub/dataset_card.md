@@ -39,20 +39,24 @@ aligned. That gap is normally where a pile of brittle glue code lives.
 apairo closes it on the read side, and the per-frame value ops are **standard
 [`apairo_transform`](https://github.com/apairo-robotics/apairo_transform)
 callables** — cast the command, take the pose out of the odometry row, leave the
-image untouched — chained onto the synchronized view, so there is **no bespoke
-domain code left**:
+image untouched — chained onto the synchronized view, plus one small pose op,
+`RelativeTo`, that re-expresses the pose relative to the episode's first one:
 
 ```python
 import numpy as np
 from apairo import TartanKittiDataset, Compose
 from apairo_transform import CastTo, ChannelSelect   # library transforms
+from apairo_huggingface import RelativeTo            # pose relative to an origin, float64
 
-frames = (TartanKittiDataset(root, keys=["image_left_color", "gps_odom", "cmd"])
+synced = (TartanKittiDataset(root, keys=["image_left_color", "gps_odom", "cmd"])
           .synchronize(reference="image_left_color",       # multi-rate → camera clock
-                       method="nearest", tolerance=0.05)
+                       method="nearest", tolerance=0.1))
+origin = synced[0].data["gps_odom"][:7]                    # the episode's first pose
+frames = (synced
           .transform("gps_odom", Compose([ChannelSelect(range(7)),  # pose out of Odometry
-                                          CastTo(np.float32)]))
-          .transform("cmd", CastTo(np.float32)))            # image_left_color: as-is
+                                          RelativeTo(origin),       # episode-relative, float64
+                                          CastTo(np.float32)]), in_place=False)
+          .transform("cmd", CastTo(np.float32), in_place=False))   # image_left_color: as-is
 ```
 
 The whole export is then *load → align → copy → finalize*, because apairo
@@ -72,9 +76,10 @@ for recording in tartan.sequences:              # one recording = one episode
 dataset.finalize()
 ```
 
-No timestamp-matching loop, no per-sensor resampling, no episode bookkeeping,
-and no custom transform code — `synchronize()` resamples every channel onto the
-camera clock (nearest within ±50 ms) and the value ops are library callables.
+No timestamp-matching loop, no per-sensor resampling, no episode bookkeeping —
+`synchronize()` resamples every channel onto the camera clock (nearest within
+±100 ms: the lidar-clocked mask sits up to ~50 ms from the camera tick) and the
+value ops are library callables plus `RelativeTo`.
 Full source: [`mappings.py`](https://github.com/apairo-robotics/apairo_huggingface/blob/main/src/apairo_huggingface/mappings.py).
 
 **Full source, all open:**
@@ -97,7 +102,7 @@ dataset = LeRobotDataset("apairo-robotics/tartandrive_offroad")
 frame = dataset[0]
 frame["observation.images.front"]           # (H, W, 3) front camera
 frame["observation.traversability_mask"]    # 1 driven / 0 lidar-seen, no info / 255 unobserved
-frame["observation.state"]                  # [x, y, z, qx, qy, qz, qw] pose
+frame["observation.state"]                  # [x, y, z, qx, qy, qz, qw] pose, relative to the episode's first frame
 frame["action"]                             # [linear_velocity, angular_velocity]
 ```
 
@@ -105,12 +110,19 @@ frame["action"]                             # [linear_velocity, angular_velocity
 |---|---|---|
 | `observation.images.front` | (H, W, 3) uint8 video | `image_left_color` — left colour camera |
 | `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` driven (traversable), `0` lidar points (no label information), `255` unobserved |
-| `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` |
+| `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` relative to the episode's first frame, in its body frame |
 | `action` | (2,) float32 | `cmd` — `[linear_velocity, angular_velocity]` |
 
 - **fps**: 10 (camera clock) · **robot_type**: `tartandrive` (Yamaha Viking ATV)
   · **task**: `drive off-road`
 - 55 recordings → 55 episodes, 123,786 synchronized frames.
+- **State convention**: every episode starts at `[0, 0, 0, 0, 0, 0, 1]`; the
+  pose of frame *k* is `T_first⁻¹ · T_k`, metres and an `xyzw` quaternion in
+  the `gps_odom` body frame of the episode's first frame (the convention of the
+  apairo RELLIS, FoMo and BEV exports). `gps_odom` positions are UTM-scale
+  (x ≈ 4.5e6 m), where float32 spacing is 0.5 m; the first pose is subtracted
+  in float64 before the float32 cast, so the stored state keeps sub-millimetre
+  resolution.
 - The mask is stored as lossless PNG (`image`), not mp4 (`video`): compression
   must not corrupt label values. Single channel replicated to RGB; read any one.
 - The lidar *produces* the labels; it is not part of the published dataset.
