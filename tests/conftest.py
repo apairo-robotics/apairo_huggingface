@@ -47,13 +47,17 @@ def _write_sequence(seq):
         Image.fromarray(np.full((H, W, 3), (i * 30) % 255, dtype=np.uint8)).save(img / f"{i:06d}.png")
     _timestamps(img / "timestamps.txt", N)
 
+    # The INS as recorded: 50 Hz, from 0.1 s before the first scan to 0.1 s
+    # after the last (the lidar lookup is shifted by INS_CLOCK_OFFSET), driving
+    # DRIVE_STEP per scan period along +x -- the same motion as gicp_poses.
     odom = seq / "gps_odom"
     odom.mkdir()
-    rows = np.zeros((N, 13), dtype=np.float64)
-    rows[:, 0] = np.arange(N)     # x advances
+    t = BASE + np.arange(-5, 5 * (N - 1) + 6) * (STEP / 5)
+    rows = np.zeros((len(t), 13), dtype=np.float64)
+    rows[:, 0] = (t - BASE) / STEP * DRIVE_STEP
     rows[:, 6] = 1.0              # quaternion w = 1
     np.save(odom / "odometry.npy", rows)
-    _timestamps(odom / "timestamps.txt", N)
+    (odom / "timestamps.txt").write_text("".join(f"{x:.6f}\n" for x in t))
 
     cmd = seq / "cmd"
     cmd.mkdir()

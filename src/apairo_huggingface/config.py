@@ -14,10 +14,25 @@ TRAV_MASK = "trav_mask"       # (H, W) uint8 -- written by .labeling
                               # 1 driven / 0 lidar-seen, no info / 255 unobserved
 
 # --- Traversability labeling (see .labeling) ------------------------------- #
-POSES = "gicp_poses"          # per-scan (4, 4) poses on the lidar clock
-TRAV_TRAJ = "trav_traj"       # per-point labels channel
+# Poses: the vehicle's INS (gps_odom), looked up on the lidar clock by
+# .reference_poses -- delivered data, no estimation. gicp_poses / kissicp_poses
+# remain selectable (apairo-tartan-label --poses) for comparison only.
+POSES = "ins_poses"           # per-scan (4, 4) poses on the lidar clock, NaN where invalid
+POSE_VALID = "ins_valid"      # per-scan bool: the pose may be used
+POSE_SOURCES = {"ins": "ins_poses", "gicp": "gicp_poses", "kissicp": "kissicp_poses"}
+INS_CLOCK_OFFSET = -0.05      # s, INS clock minus lidar clock; measured -0.06 / -0.05
+                              # on turnpike_afternoon_fall / down_meadows
+INS_MAX_GAP = 0.1             # s; INS rows every 0.02 s, a longer hole leaves its scans without a pose
+MAX_SPEED = 20.0              # m/s; top speed bound, 14.5 m/s is the fastest measured
+TRAV_TRAJ = "trav_traj"       # per-point labels channel: 1 / 0 / UNKNOWN
 LIDAR_UV = "lidar_uv"         # per-point [u, v, depth] channel
-FORWARD_DISTANCE = 40.0       # look-ahead cap, metres of path (loops mislabel beyond)
+UNKNOWN = 255                 # label of a scan without a trusted pose (and unobserved pixels)
+# Look-ahead cap, metres of path. Sources of poses agree with each other within
+# 5-10 cm (median) at 10 m ahead and drift apart further on, to 1.2-1.5 m (p95)
+# at 40 m, the former cap (INS vs KISS-ICP vs the release's SLAM, two
+# recordings): 15 m keeps the error of the driven path well below the
+# footprint's half-width.
+FORWARD_DISTANCE = 15.0
 # The rig is a modified Yamaha Viking (overall width 61.8in = 1.57m per the
 # manufacturer spec -> 0.785m half-width; 0.8m matches within 1.5cm).
 ROBOT_HALF_WIDTH = 0.8        # ATV footprint half-width (m)

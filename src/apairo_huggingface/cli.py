@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 
+from . import config
 from .export import load_tartan, to_lerobot, validate
 
 
@@ -22,8 +23,12 @@ def label_main(argv=None):
                         help="relabel recordings whose channels already exist")
     parser.add_argument("--keep-uv", action="store_true",
                         help="also persist lidar_uv (~2 GB/recording; recomputable on demand)")
+    parser.add_argument("--poses", choices=sorted(config.POSE_SOURCES), default="ins",
+                        help="pose source: ins (the vehicle's INS, default) or a lidar "
+                        "odometry computed beforehand, for comparison")
     args = parser.parse_args(argv)
-    label_root(args.root, overwrite=args.overwrite, keep_uv=args.keep_uv)
+    label_root(args.root, poses_key=config.POSE_SOURCES[args.poses],
+               overwrite=args.overwrite, keep_uv=args.keep_uv)
 
 
 def gt_label_main(argv=None):

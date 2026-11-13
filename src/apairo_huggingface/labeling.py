@@ -43,6 +43,7 @@ from apairo_preprocess import (
 
 from . import config
 from .calibration import CAMERA, IMAGE_HEIGHT, IMAGE_WIDTH, T_OPTICAL_FROM_VELODYNE
+from .reference_poses import load_validity, write_ins_poses
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +73,9 @@ def load_poses(seq_dir: Path, key: str) -> tuple[np.ndarray, np.ndarray]:
     channel = Path(seq_dir) / key
     if not channel.is_dir():
         raise FileNotFoundError(
-            f"'{key}' not found in {seq_dir} — run an odometry preprocessor "
-            f"first (e.g. apairo_preprocess.KissICPOdometry)."
+            f"'{key}' not found in {seq_dir}. The INS poses are written by "
+            f"reference_poses.write_ins_poses; other sources must be computed "
+            f"beforehand."
         )
     stacked = [p for name in ("poses.npy", f"{key}.npy") if (p := channel / name).exists()]
     if stacked:
@@ -212,6 +214,8 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
     for c in existing:
         _remove_channel(seq_dir, c)
 
+    if poses_key == config.POSES:
+        write_ins_poses(seq_dir)
     ds = TartanKittiDataset(seq_dir, keys=[LIDAR])
     lidar_ts = np.asarray(ds.timestamps[LIDAR])
     poses, poses_ts = load_poses(seq_dir, poses_key)
@@ -221,9 +225,16 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
             f"'{poses_key}' is not on the lidar clock (max skew "
             f"{np.abs(poses_ts[:n] - lidar_ts[:n]).max():.3f}s); resample it first."
         )
+    poses, poses_ts = poses[:n], poses_ts[:n]
+    valid = load_validity(seq_dir, poses_key, poses, poses_ts)
     traj = poses[:, :3, 3]
-    seg = np.linalg.norm(np.diff(traj, axis=0), axis=1)
+    # No step across an invalid scan: it adds no path, and the corridor of a
+    # scan stops at the first invalid one after it.
+    step_ok = valid[:-1] & valid[1:]
+    seg = np.where(step_ok, np.linalg.norm(np.diff(np.where(valid[:, None], traj, 0.0), axis=0), axis=1), 0.0)
     path = np.concatenate([[0.0], np.cumsum(seg)])
+    breaks = np.flatnonzero(~step_ok) + 1
+    run_end = np.concatenate([breaks, [n]])[np.searchsorted(breaks, np.arange(n), side="right")]
 
     labeler = TraversabilityFromTrajectory(
         robot_radius=config.ROBOT_HALF_WIDTH,
@@ -231,6 +242,8 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
         height_min=config.HEIGHT_MIN,
         height_max=config.HEIGHT_MAX,
         forward_distance=config.FORWARD_DISTANCE,
+        valid_key="valid",
+        unknown_label=config.UNKNOWN,
     )
     projector = LidarCameraProjection(
         intrinsics=CAMERA, extrinsics=T_OPTICAL_FROM_VELODYNE, lidar_key=LIDAR,
@@ -261,25 +274,29 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
             tail = min(n, int(np.searchsorted(path, path[b - 1] + config.FORWARD_DISTANCE)) + 1)
             scans = [np.asarray(ds.load(LIDAR, i)) for i in range(a, b)]
             frames = [
-                Sample(data={"lidar": s, "poses": poses[i]})
+                Sample(data={"lidar": s, "poses": poses[i], "valid": np.bool_(valid[i])})
                 for i, s in zip(range(a, b), scans)
             ] + [
-                Sample(data={"lidar": _EMPTY_SCAN, "poses": poses[i]})
+                Sample(data={"lidar": _EMPTY_SCAN, "poses": poses[i], "valid": np.bool_(valid[i])})
                 for i in range(b, tail)
             ]
             labels = labeler(iter(frames))[: b - a]
 
             for j, i in enumerate(range(a, b)):
                 uv = projector(Sample(data={LIDAR: scans[j]}))
-                mask = masker(Sample(data={"trav_traj": labels[j], "lidar_uv": uv}))
-                # The driven corridor on top: the robot passed there —
-                # strongest traversability evidence, denser than any ring.
-                mask[corridor_mask(
-                    traj, i, poses[i], uv,
-                    max_path=config.FORWARD_DISTANCE,
-                    half_width=config.ROBOT_HALF_WIDTH,
-                    ground_offset=config.GROUND_OFFSET,
-                )] = 1
+                if valid[i]:
+                    mask = masker(Sample(data={"trav_traj": labels[j], "lidar_uv": uv}))
+                    # The driven corridor on top: the robot passed there —
+                    # strongest traversability evidence, denser than any ring.
+                    mask[corridor_mask(
+                        traj[: run_end[i]], i, poses[i], uv,
+                        max_path=config.FORWARD_DISTANCE,
+                        half_width=config.ROBOT_HALF_WIDTH,
+                        ground_offset=config.GROUND_OFFSET,
+                    )] = 1
+                else:
+                    # No trusted pose: nothing is known in this frame.
+                    mask = np.full((IMAGE_HEIGHT, IMAGE_WIDTH), config.UNKNOWN, dtype=np.uint8)
                 stem = f"{i:06d}"
                 ts = float(lidar_ts[i])
                 w_traj.add(np.asarray(labels[j], dtype=np.uint8), stem=stem, timestamp=ts)
@@ -293,11 +310,12 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
         seq_dir, config.TRAV_MASK, "img",
         timestamps_from=LIDAR, sources=[config.TRAV_TRAJ, poses_key],
     )
-    logger.info("%s: labeled (%d frames)", seq_dir.name, n)
+    logger.info("%s: labeled (%d frames, %d without a trusted pose)", seq_dir.name, n, int((~valid).sum()))
     return True
 
 
-def label_root(root, *, overwrite: bool = False, keep_uv: bool = False) -> None:
+def label_root(root, *, poses_key: str = config.POSES, overwrite: bool = False,
+               keep_uv: bool = False) -> None:
     """Label every recording under ``root`` (or ``root`` itself, if a sequence).
 
     A recording that cannot be labeled (missing poses, malformed channel) is
@@ -311,7 +329,7 @@ def label_root(root, *, overwrite: bool = False, keep_uv: bool = False) -> None:
     failed = []
     for seq_dir in seq_dirs:
         try:
-            label_sequence(seq_dir, overwrite=overwrite, keep_uv=keep_uv)
+            label_sequence(seq_dir, poses_key=poses_key, overwrite=overwrite, keep_uv=keep_uv)
         except Exception as exc:  # noqa: BLE001 -- survey run, report at the end
             failed.append(Path(seq_dir).name)
             logger.warning("%s: failed — %s", Path(seq_dir).name, exc)

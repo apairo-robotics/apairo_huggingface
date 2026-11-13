@@ -48,7 +48,8 @@ def _utm_odometry(seq, step=0.26, yaw=np.radians(30.0)):
     float32 spacing is 0.5 m) driving ``step`` metres per frame along ``yaw``."""
     path = Path(seq) / config.STATE / "odometry.npy"
     rows = np.load(path)
-    k = np.arange(len(rows))
+    times = np.loadtxt(Path(seq) / config.STATE / "timestamps.txt")
+    k = (times - times[0]) / (times[1] - times[0]) / 5   # frames since the first row (50 Hz rows, 10 Hz frames)
     rows[:, 0] = 4_479_748.098 + step * k * np.cos(yaw)
     rows[:, 1] = -603_117.905 + step * k * np.sin(yaw)
     rows[:, 2] = 300.516
