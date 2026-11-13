@@ -69,11 +69,17 @@ def main(argv=None) -> int:
     sources = [_ins(seq, scan_times)]
     if args.kissicp:
         sources.append(_kissicp(seq, args.work))
+    # Delivered rows get their clock offset estimated against the lidar's own
+    # motion: KISS-ICP when it runs, else a pose channel given before them.
     for path in args.against:
         path = path if path.is_absolute() or path.exists() else seq / path
         if (path / "odometry.npy").exists():
-            sources.append(load_rows(path, scan_times, against=sources[-1] if len(sources) > 1 else None,
-                                     clock_offset=None if len(sources) > 1 else 0.0))
+            lidar = [s for s in sources[1:] if s.clock_offset == 0.0 and s.name != "ins"]
+            if lidar:
+                sources.append(load_rows(path, scan_times, against=lidar[0]))
+            else:
+                logger.warning("%s: no lidar trajectory to estimate its clock offset; 0 s", path.name)
+                sources.append(load_rows(path, scan_times, clock_offset=0.0))
         else:
             sources.append(load_pose_channel(path))
     if len(sources) < 2:
