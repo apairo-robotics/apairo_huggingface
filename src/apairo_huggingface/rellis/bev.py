@@ -154,7 +154,7 @@ class BevGrids(BevGridBase):
         super().__init__(poses, np.asarray(dataset.timestamps[config.LIDAR], dtype=np.float64),
                          accumulate=accumulate, stride=stride, lidar_height=config.LIDAR_HEIGHT,
                          min_range=config.MIN_RANGE, half_width=config.ROBOT_HALF_WIDTH,
-                         path_back=config.BEV_PATH_BACK, path_forward=config.FORWARD_DISTANCE,
+                         path_back=config.BEV_PATH_BACK, path_forward=config.BEV_PATH_FORWARD,
                          min_future_path=config.MIN_FUTURE_PATH)
         self.self_box = str((config.SELF_BOX_X, config.SELF_BOX_Y, config.SELF_BOX_Z))
         self._lidar = dataset.loaders[config.LIDAR]

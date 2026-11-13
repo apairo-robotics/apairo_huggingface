@@ -30,7 +30,11 @@ MIN_RANGE = 2.0            # m; drops returns off the robot itself
 
 # Traversability. The platform is a Clearpath Warthog, 1.38 m wide.
 ROBOT_HALF_WIDTH = 0.7
-FORWARD_DISTANCE = 30.0    # look-ahead cap, metres of path
+# Look-ahead cap of the labels, metres of path. Measured on TartanDrive (INS
+# vs KISS-ICP vs the release's SLAM): pose sources agree within 5-10 cm at
+# 10 m ahead and drift to 1.2-1.5 m (p95) at 40 m. poses.txt of 00000 has
+# no hole and no jump (2,847 poses, largest step 0.24 m at 10 Hz).
+FORWARD_DISTANCE = 15.0
 MIN_FUTURE_PATH = 10.0     # m; frames with less path ahead get an all-255 trav mask
 # The Ouster sits ~1.0 m above the ground (median ground z, 2-4 m ring, all
 # sequences). Height window relative to the nearest future pose: -0.3 / +0.5 m
@@ -87,9 +91,11 @@ BEV_ACCUMULATE = 10
 BEV_STRIDE = 2
 # Driven corridor: the robot's footprint (ROBOT_HALF_WIDTH either side of the
 # path) along the trajectory from BEV_PATH_BACK metres of path behind the scan to
-# FORWARD_DISTANCE metres ahead. Frames with less than MIN_FUTURE_PATH ahead get
-# an all-255 trav grid, as in the image masks.
+# BEV_PATH_FORWARD metres ahead. Frames with less than MIN_FUTURE_PATH ahead get
+# an all-255 trav grid, as in the image masks. The BEV keeps its 30 m: changing
+# it is a separate decision from the labels' look-ahead.
 BEV_PATH_BACK = 10.0
+BEV_PATH_FORWARD = 30.0
 # Self-returns: besides MIN_RANGE, every sequence has robot-attached returns
 # 1.7-2.9 m BEHIND the lidar (Ouster +x), mostly labelled void, at a fixed
 # place in the sensor frame (00003: in 78% of scans, ~1700 points). They are
