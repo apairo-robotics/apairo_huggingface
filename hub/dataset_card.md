@@ -109,7 +109,7 @@ frame["action"]                             # [linear_velocity, angular_velocity
 | Feature | Shape | Source (TartanDrive channel) |
 |---|---|---|
 | `observation.images.front` | (H, W, 3) uint8 video | `image_left_color` — left colour camera |
-| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` driven (traversable), `0` lidar points (no label information), `255` unobserved |
+| `observation.traversability_mask` | (H, W, 3) uint8 image | `trav_mask` — derived; `1` driven (traversable), `0` lidar points (no label information), `255` unobserved, or the whole frame when its scan has no INS pose |
 | `observation.state` | (7,) float32 | `gps_odom` — pose `[x, y, z, qx, qy, qz, qw]` relative to the episode's first frame, in its body frame |
 | `action` | (2,) float32 | `cmd` — `[linear_velocity, angular_velocity]` |
 
@@ -136,8 +136,13 @@ lidar scan:
 
 1. **Points** — lidar points inside the robot footprint swept along the
    *future* trajectory are traversable
-   (`TraversabilityFromTrajectory`, look-ahead capped at 40 m of path so a
-   looping trajectory cannot label distant terrain);
+   (`TraversabilityFromTrajectory`, look-ahead capped at 15 m of path). The
+   future path is the vehicle's INS (`gps_odom`) looked up at the scan time,
+   nothing estimated. Pose sources (INS, lidar odometry, the release's SLAM)
+   agree within 5-10 cm 10 m ahead and drift apart to 1.2-1.5 m (p95) at
+   40 m; 15 m keeps 99% of the traversable pixels of a 40 m cap. A frame whose
+   scan has no INS pose (a hole in the INS rows, a jump beyond 20 m/s) is all
+   `255`;
 2. **Projection** — the scan projects into the rectified left camera
    (`LidarCameraProjection`; intrinsics = the multisense `P`, extrinsics
    composed from the upstream `extrinsics.yaml`);

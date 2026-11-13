@@ -34,9 +34,27 @@ Per lidar scan, three `apairo_preprocess` preprocessors compose
 
 | Stage | Primitive | Output channel |
 |---|---|---|
-| points inside the future robot footprint, look-ahead capped at 40 m of *path* | `TraversabilityFromTrajectory` | `trav_traj` (N,) |
+| points inside the future robot footprint, look-ahead capped at 15 m of *path* | `TraversabilityFromTrajectory` | `trav_traj` (N,) |
 | scan → rectified left camera, row-aligned `[u, v, depth]` | `LidarCameraProjection` | `lidar_uv` (N, 3) — opt-in (`--keep-uv`), recomputable |
 | labels splatted nearest-depth-wins + z-buffer, then the **driven corridor** rasterized as occlusion-checked filled quads | `ImageMaskFromPointLabels` + corridor | `trav_mask` (H, W) — grayscale PNG, loader `img` |
+
+**Poses.** The future path comes from `gps_odom`, the vehicle's INS that the
+recordings ship, looked up at each scan's time
+([`reference_poses.py`](src/apairo_huggingface/reference_poses.py),
+`apairo_preprocess.reference_poses`): interpolation between the two INS rows
+around the scan, a clock offset of -0.05 s measured once, nothing estimated.
+A scan whose time no two rows bracket within 0.1 s, or whose step exceeds
+20 m/s, has no pose: its labels and its mask are all `255`, and the
+look-ahead of the scans before it stops there.
+
+**Look-ahead.** 15 m of path. Measured with `apairo-pose-diagnostic` on
+turnpike_afternoon_fall and down_meadows (INS, KISS-ICP, the release's
+`super_odom`): the sources agree within 5-10 cm (median) 10 m ahead and drift
+apart further on, to 1.2-1.5 m (p95) at 40 m, the former cap; INS and KISS-ICP
+stay within 30 cm for 86% of the scans at 10 m, 74% at 15 m, 21% at 40 m.
+The cut costs little: on turnpike_afternoon_fall, 15 m keeps 99% of the
+traversable pixels of 40 m (14.1% against 14.3% of the image, mean per
+frame); beyond 15 m the ground is a few rows of pixels near the horizon.
 
 The corridor is what makes the mask *dense*: the footprint ribbon interpolated
 along the future trajectory fills the whole driven passage instead of a set of
@@ -78,9 +96,13 @@ The lidar *produces* the labels; it is not part of the published dataset.
 ## Use
 
 ```bash
-# 1. Label: write the derived channels on every recording.
-#    Needs per-scan poses (gicp_poses; else run apairo_preprocess.KissICPOdometry).
+# 1. Label: write the derived channels on every recording. The poses come from
+#    the INS (gps_odom); --poses gicp|kissicp labels from an odometry instead,
+#    for comparison.
 apairo-tartan-label --root /path/to/tartan
+
+# 0. (once per dataset) How far ahead do the pose sources agree?
+apairo-pose-diagnostic /path/to/tartan/<recording> --kissicp --work /tmp/diag
 
 # 2. Validate the read pipeline only — no lerobot, no writes.
 apairo-tartan-export --dry-run --root /path/to/tartan
