@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "apairo>=0.11",
-    "apairo_preprocess>=0.3",
+    "apairo_preprocess>=0.4",
     "apairo_transform>=0.3.1",
     "lerobot>=0.4.0",
     "datasets>=4.0",
@@ -33,6 +33,7 @@ apairo-fomo = "apairo_huggingface.fomo.cli:main"
 apairo-rellis = "apairo_huggingface.rellis.cli:main"
 apairo-sim-amiad = "apairo_huggingface.sim_amiad.cli:main"
 apairo-tartan-bev = "apairo_huggingface.tartan_bev.cli:main"
+apairo-pose-diagnostic = "apairo_huggingface.diagnostics.cli:main"
 
 [project.entry-points."apairo.formats"]
 fomo_bin = "apairo_huggingface.fomo.format:FomoBinFormat"
