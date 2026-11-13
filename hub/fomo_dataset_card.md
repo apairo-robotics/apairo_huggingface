@@ -109,6 +109,14 @@ KISS-ICP drift stays at 0.15-0.21 m RMSE over ~300 m on every exported deploymen
 snow included, so the corridor is placed on the camera image by the odometry
 alone.
 
+The poses are an estimate: FoMo ships GNSS-PPK positions (`gt.txt`) but no
+orientation, so a full pose per scan comes from lidar odometry. What the labels
+depend on is the error over the look-ahead, not over the whole trajectory:
+on `2025-10-14/red_2025-10-14-11-41`, the horizontal position error inside a
+10 m stretch of path, after a rigid alignment of the stretch to `gt.txt`, is
+0.17 m median and 0.39 m at worst (296 stretches). It comes from a distance
+noise of about 2% over a few metres, not from a clock offset.
+
 ### Known issues
 
 - **2025-01-29 (`red_2025-01-30-09-58`, -24 degC) is excluded.** Every Basler

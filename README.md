@@ -142,7 +142,9 @@ published as labels only (keyed by the raw FoMo file names):
 - `fomo_bin`, an apairo **format plugin** for FoMo's packed 26-byte lidar records;
 - a declaration (`fomo/apairo.yaml`) reading the tree as published -- RoboSense
   scans, camera images and the ~50 Hz twist commands, each on its own clock;
-- KISS-ICP odometry, scored against FoMo's GNSS-PPK `gt.txt` (ATE);
+- KISS-ICP odometry, scored against FoMo's GNSS-PPK `gt.txt` (ATE; FoMo ships no
+  orientation, so its poses are an estimate: 0.17 m median, 0.39 m worst error
+  over 10 m of path on `red_2025-10-14-11-41`);
 - per-point RoboSense labels of the future and the past driven footprint;
 - one mask per frame of each camera, computed **at the camera instant** from
   the scans and the camera stamps of the bucket listing (no image needed):
