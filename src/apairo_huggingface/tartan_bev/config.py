@@ -14,7 +14,7 @@ from .. import config as tartan
 # Channels of a raw TartanDrive recording (symlinked into the view).
 CAMERA = tartan.CAMERA        # image_left_color: 1024x544 rectified RGB, ~10 Hz
 LIDAR = "velodyne_0"          # (N, 3) float32 x y z in the vehicle frame (x forward, z up), 10 Hz
-POSES = tartan.POSES          # gicp_poses: (4, 4) T_world_vehicle per scan, on the lidar clock
+POSES = "gicp_poses"         # (4, 4) T_world_vehicle per scan, on the lidar clock (not tartan.POSES: the BEV keeps GICP)
 POSE_VALID = "gicp_valid"     # gicp_poses/valid_mask.npy: (N,) bool per pose, on the lidar clock
 ATTITUDE = tartan.STATE       # gps_odom: Novatel INS rows, [x y z qx qy qz qw (local level <- vehicle), twist], 50 Hz
 ACTION = tartan.ACTION        # cmd: [linear_velocity, angular_velocity] command

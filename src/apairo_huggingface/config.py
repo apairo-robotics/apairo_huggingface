@@ -21,15 +21,15 @@ FORWARD_DISTANCE = 40.0       # look-ahead cap, metres of path (loops mislabel b
 # The rig is a modified Yamaha Viking (overall width 61.8in = 1.57m per the
 # manufacturer spec -> 0.785m half-width; 0.8m matches within 1.5cm).
 ROBOT_HALF_WIDTH = 0.8        # ATV footprint half-width (m)
-# TraversabilityFromTrajectory's height_min/height_max are relative to the
-# nearest future *pose* (the velodyne, ~1.77m above the ground -- see
-# GROUND_OFFSET below), not the ground directly: [-2.3, -1.2] here is
-# apairo_preprocess's own ground-relative default (-0.3m / +0.5m -- a low
-# obstacle/rock band a 0.3m-clearance UTV would actually snag on) shifted by
-# that ~1.77m rig height, i.e. effectively [-0.53m, +0.57m] around the ground.
-HEIGHT_MIN = -2.3             # height window around the ground, relative to the
-HEIGHT_MAX = -1.2             # velodyne (ground sits ~1.8 m below it)
-GROUND_OFFSET = -1.77         # corridor height relative to the pose (m)
+# The poses are the velodyne's, POSE_HEIGHT above the ground: the labeller's
+# height window is given around the ground and shifted by pose_height. These
+# are the values the labels have always used ([-2.3, -1.2] around the
+# velodyne); on turnpike_afternoon_fall, 504 scans and 18M points, the two
+# spellings give the same label for every point.
+POSE_HEIGHT = 1.77            # velodyne above the ground (m)
+HEIGHT_MIN = -0.53            # height window around the ground under a future pose (m)
+HEIGHT_MAX = 0.57
+GROUND_OFFSET = -POSE_HEIGHT  # corridor height relative to the pose (m)
 SPLAT_RADIUS = 2              # sparse point splat radius (px)
 OCCLUSION_BIN_PX = 8          # z-buffer bin for the point mask (px)
 

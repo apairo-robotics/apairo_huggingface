@@ -227,6 +227,7 @@ def label_sequence(seq_dir, *, poses_key: str = config.POSES, overwrite: bool = 
 
     labeler = TraversabilityFromTrajectory(
         robot_radius=config.ROBOT_HALF_WIDTH,
+        pose_height=config.POSE_HEIGHT,
         height_min=config.HEIGHT_MIN,
         height_max=config.HEIGHT_MAX,
         forward_distance=config.FORWARD_DISTANCE,
